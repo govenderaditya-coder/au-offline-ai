@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-AU Voice Assistant — Hands-Free Interactive Personal Assistant
-Continuously listens to your voice, executes Mac actions, and speaks back.
-No keyboard needed.
+AU Voice Assistant — Hands-Free Voice Agent
+Powered by Native macOS CoreAudio VAD + Local Faster-Whisper + Ollama M4 Engine
 """
 
 import os
@@ -13,25 +12,31 @@ import urllib.request
 import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ACTIONS_MODULE = os.path.join(SCRIPT_DIR, "src", "app", "au_actions.py")
-LISTEN_TOOL = os.path.join(SCRIPT_DIR, "tools", "au-listen")
+RECORD_TOOL = os.path.join(SCRIPT_DIR, "tools", "au-record")
+ACTIONS_MODULE = os.path.join(SCRIPT_DIR, "src", "app")
+sys.path.insert(0, ACTIONS_MODULE)
 
-sys.path.insert(0, os.path.join(SCRIPT_DIR, "src", "app"))
 import au_actions
 import au_voice_id
 
-VOICE_NAME = "Samantha"  # macOS voice (Samantha, Daniel, etc.)
+# Initialize Faster-Whisper for instant local transcription
+from faster_whisper import WhisperModel
+
+print("⚡ \033[1;34m[INITIALIZING]\033[0m Loading local Whisper Neural Engine...")
+whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+print("✅ \033[1;32m[READY]\033[0m Neural Voice Engine loaded!")
+
+VOICE_NAME = "Samantha"
 MODEL_NAME = "au-assistant:latest"
 
 def speak(text: str):
-    """Speaks text using macOS native speech synthesis (blocking so mic doesn't hear itself)."""
+    """Speaks text using macOS native speech synthesis (blocking)."""
     if not text:
         return
     cleaned = text.replace("*", "").replace("#", "").replace("[", "").replace("]", "").strip()
     if not cleaned:
         return
     print(f"\n🗣️ \033[1;33m[AU SPEAKING]:\033[0m {cleaned}\n")
-    # Blocking call ensures AU never listens to his own voice!
     subprocess.run(["say", "-v", VOICE_NAME, cleaned])
 
 def query_au(user_prompt: str) -> str:
@@ -51,13 +56,21 @@ def query_au(user_prompt: str) -> str:
     except Exception as e:
         return f"I had trouble connecting to my local brain: {e}"
 
-def listen_once() -> str:
-    """Listens to microphone until silence using the native Apple Speech tool."""
-    if not os.path.exists(LISTEN_TOOL):
+def listen_and_transcribe() -> str:
+    """Records voice when speech is detected and transcribes it."""
+    if not os.path.exists(RECORD_TOOL):
         return ""
     try:
-        res = subprocess.run([LISTEN_TOOL], capture_output=True, text=True, timeout=18)
-        return res.stdout.strip()
+        proc = subprocess.run([RECORD_TOOL], capture_output=True, text=True, timeout=18)
+        output_status = proc.stdout.strip()
+        
+        if output_status == "AUDIO_READY":
+            audio_path = "/tmp/au_speech.wav"
+            if os.path.exists(audio_path):
+                segments, info = whisper_model.transcribe(audio_path, beam_size=1)
+                text = " ".join([s.text for s in segments]).strip()
+                return text
+        return ""
     except Exception:
         return ""
 
@@ -65,7 +78,6 @@ def process_command(command: str):
     """Parses intent, runs Mac automation actions, and speaks back."""
     cmd_lower = command.lower()
 
-    # Built-in Voice Assistant quick overrides
     if "go to sleep" in cmd_lower or "stop listening" in cmd_lower:
         speak("Going to standby. Say 'Wake up AU' when you need me.")
         return "sleep"
@@ -100,9 +112,9 @@ def main():
 ╚══════════════════════════════════════════════════════════════╝
     """)
     print("• Mode:         \033[1;32mHands-Free Interactive (No keyboard needed)\033[0m")
-    print("• Speech Input: \033[1;32mApple Native Speech Framework (M4 Hardware Accel)\033[0m")
+    print("• Speech Input: \033[1;32mLocal Neural Whisper + CoreAudio VAD\033[0m")
     print("• Speech Voice: \033[1;32m" + VOICE_NAME + " (macOS High-Res)\033[0m")
-    print("• Voice Lock:   \033[1;32m" + ("Active (Aditya)" if au_voice_id.is_voice_lock_active() else "Ready to Train") + "\033[0m")
+    print("• Voice Lock:   \033[1;32m" + ("Active (Aditya)" if au_voice_id.is_voice_lock_active() else "Available") + "\033[0m")
     print("-" * 64)
     print("👉 Simply start speaking. When you finish, AU responds automatically.")
     print("👉 Say \033[1;33m'Go to sleep'\033[0m to pause, or \033[1;31mCtrl+C\033[0m to quit.\n")
@@ -114,22 +126,22 @@ def main():
     while True:
         try:
             if is_sleeping:
-                print("💤 \033[1;30m[STANDBY] Sleeping... (Say 'Wake up AU' or press Enter)\033[0m")
-                heard = listen_once()
+                print("💤 \033[1;30m[STANDBY] Sleeping... (Say 'Wake up AU' or press Ctrl+C)\033[0m", end="\r", flush=True)
+                heard = listen_and_transcribe()
                 if heard and ("wake up" in heard.lower() or "hey au" in heard.lower() or "au" in heard.lower()):
                     is_sleeping = False
                     speak("I am back awake and ready.")
+                time.sleep(0.2)
                 continue
 
-            print("🟢 \033[1;32m[LISTENING] Speak now...\033[0m", end="", flush=True)
-            user_speech = listen_once()
+            print("🟢 \033[1;32m[LISTENING] Speak now...\033[0m", end="\r", flush=True)
+            user_speech = listen_and_transcribe()
 
-            if not user_speech:
-                # Brief pause before re-arming mic
+            if not user_speech or len(user_speech) < 2:
                 time.sleep(0.1)
                 continue
 
-            print(f"\r👤 \033[1;36m[YOU SAID]:\033[0m \"{user_speech}\"")
+            print(f"\n👤 \033[1;36m[YOU SAID]:\033[0m \"{user_speech}\"")
 
             status = process_command(user_speech)
             if status == "sleep":
