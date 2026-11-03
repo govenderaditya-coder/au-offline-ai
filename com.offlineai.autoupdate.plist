@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    macOS LaunchAgent — Auto-Update Offline AI
+    This runs the auto-update script every 6 hours when logged in.
+    Install by copying to ~/Library/LaunchAgents/ and loading it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.offlineai.autoupdate</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/aditya/Downloads/offline ai/auto-update-models.sh</string>
+    </array>
+
+    <!-- Run every 6 hours (21600 seconds) -->
+    <key>StartInterval</key>
+    <integer>21600</integer>
+
+    <!-- Also run once when the agent is loaded (on login) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep logs -->
+    <key>StandardOutPath</key>
+    <string>/Users/aditya/.offline-ai/launchd-out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aditya/.offline-ai/launchd-err.log</string>
+
+    <!-- Only run when connected to network -->
+    <key>NetworkState</key>
+    <true/>
+</dict>
+</plist>
