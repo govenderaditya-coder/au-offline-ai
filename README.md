@@ -101,7 +101,7 @@ flowchart TB
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/YOUR_USERNAME/au-offline-ai.git
+git clone https://github.com/govenderaditya-coder/au-offline-ai.git
 cd au-offline-ai
 ```
 
