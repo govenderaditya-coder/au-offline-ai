@@ -1,7 +1,7 @@
 import Cocoa
 import WebKit
 
-class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
+class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, NSToolbarDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var loadingView: NSView!
@@ -9,11 +9,19 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     var statusLabel: NSTextField!
     var retryTimer: Timer?
 
+    // Independent Voice Assistant Process & UI
+    var assistantProcess: Process?
+    var isAssistantActive = false
+    var voiceToolbarButton: NSButton?
+    var assistantBanner: NSView?
+    var bannerLabel: NSTextField?
+    var bannerStopButton: NSButton?
+
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         setupMenu()
         ensureBackendRunning()
 
-        let windowSize = NSSize(width: 1200, height: 820)
+        let windowSize = NSSize(width: 1280, height: 860)
         let screenRect = NSScreen.main?.visibleFrame ?? NSRect(origin: .zero, size: windowSize)
         let origin = NSPoint(
             x: screenRect.midX - windowSize.width / 2,
@@ -27,12 +35,14 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
             backing: .buffered,
             defer: false
         )
-        window.title = "AU - Offline AI"
+        window.title = "AU — Offline AI & Personal Assistant"
         window.center()
-        window.minSize = NSSize(width: 800, height: 600)
-        window.titlebarAppearsTransparent = true
+        window.minSize = NSSize(width: 850, height: 600)
+        window.titlebarAppearsTransparent = false
         window.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.12, alpha: 1.0)
         window.isMovableByWindowBackground = false
+
+        setupToolbar()
 
         let config = WKWebViewConfiguration()
         let prefs = WKWebpagePreferences()
@@ -44,12 +54,15 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         container.autoresizingMask = [.width, .height]
         window.contentView = container
 
+        // Web view
         webView = WKWebView(frame: container.bounds, configuration: config)
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
         container.addSubview(webView)
+
+        setupAssistantBanner(in: container, windowSize: windowSize)
 
         // Loading Overlay
         loadingView = NSView(frame: container.bounds)
@@ -66,7 +79,7 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         spinner.startAnimation(nil)
         loadingView.addSubview(spinner)
 
-        statusLabel = NSTextField(labelWithString: "Starting AU Offline AI...")
+        statusLabel = NSTextField(labelWithString: "Starting AU Offline AI Engine...")
         statusLabel.font = NSFont.systemFont(ofSize: 15, weight: .medium)
         statusLabel.textColor = NSColor(red: 0.90, green: 0.80, blue: 0.40, alpha: 1.0)
         statusLabel.alignment = .center
@@ -80,6 +93,192 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         loadAU()
     }
 
+    // MARK: - Banner Setup (Displays Assistant Status)
+    func setupAssistantBanner(in container: NSView, windowSize: NSSize) {
+        let bannerHeight: CGFloat = 40
+        let banner = NSView(frame: NSRect(x: 0, y: windowSize.height - bannerHeight, width: windowSize.width, height: bannerHeight))
+        banner.autoresizingMask = [.width, .minYMargin]
+        banner.wantsLayer = true
+        banner.layer?.backgroundColor = CGColor(red: 0.12, green: 0.14, blue: 0.20, alpha: 0.95)
+        banner.isHidden = true
+        self.assistantBanner = banner
+
+        let label = NSTextField(labelWithString: "🟢 Personal Voice Assistant is active across your Mac — speak commands anytime.")
+        label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        label.textColor = NSColor(red: 0.4, green: 0.9, blue: 0.5, alpha: 1.0)
+        label.frame = NSRect(x: 20, y: 8, width: windowSize.width - 150, height: 24)
+        label.autoresizingMask = [.width, .minYMargin]
+        banner.addSubview(label)
+        self.bannerLabel = label
+
+        let stopBtn = NSButton(title: "Stop Assistant", target: self, action: #selector(toggleVoiceAssistant))
+        stopBtn.bezelStyle = .inline
+        stopBtn.frame = NSRect(x: windowSize.width - 120, y: 8, width: 100, height: 24)
+        stopBtn.autoresizingMask = [.minXMargin, .minYMargin]
+        banner.addSubview(stopBtn)
+        self.bannerStopButton = stopBtn
+
+        container.addSubview(banner)
+    }
+
+    // MARK: - Independent Voice Assistant Controller
+    @objc func toggleVoiceAssistant() {
+        if isAssistantActive {
+            stopVoiceAssistant()
+        } else {
+            startVoiceAssistant()
+        }
+    }
+
+    func startVoiceAssistant() {
+        let pythonPath = "/Users/aditya/.local/share/uv/tools/open-webui/bin/python"
+        let scriptPath = "/Users/aditya/Downloads/offline ai/au_voice_assistant.py"
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.arguments = [scriptPath]
+        process.environment = ProcessInfo.processInfo.environment
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            self.assistantProcess = process
+            self.isAssistantActive = true
+            updateAssistantUI(active: true)
+
+            pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                let data = handle.availableData
+                if let str = String(data: data, encoding: .utf8), !str.isEmpty {
+                    DispatchQueue.main.async {
+                        self?.handleAssistantLog(str)
+                    }
+                }
+            }
+        } catch {
+            print("Failed to run assistant: \(error)")
+        }
+    }
+
+    func stopVoiceAssistant() {
+        if let process = assistantProcess, process.isRunning {
+            process.terminate()
+        }
+        assistantProcess = nil
+        isAssistantActive = false
+        updateAssistantUI(active: false)
+    }
+
+    func updateAssistantUI(active: Bool) {
+        if active {
+            voiceToolbarButton?.title = " Assistant: ACTIVE"
+            voiceToolbarButton?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "Active")
+            assistantBanner?.isHidden = false
+        } else {
+            voiceToolbarButton?.title = " Start Assistant"
+            voiceToolbarButton?.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Mic")
+            assistantBanner?.isHidden = true
+        }
+    }
+
+    func handleAssistantLog(_ log: String) {
+        if log.contains("[YOU SAID]:") {
+            let clean = log.components(separatedBy: "[YOU SAID]:").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            bannerLabel?.stringValue = "🎙️ Heard: \(clean)"
+        } else if log.contains("[AU SPEAKING]:") {
+            let clean = log.components(separatedBy: "[AU SPEAKING]:").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            bannerLabel?.stringValue = "🤖 AU: \(clean)"
+        }
+    }
+
+    // MARK: - Podcast Studio Action
+    @objc func generatePodcast() {
+        let scriptPath = "/Users/aditya/Downloads/offline ai/make-podcast.sh"
+        let task = Process()
+        task.launchPath = "/bin/bash"
+        task.arguments = [scriptPath]
+        try? task.run()
+    }
+
+    @objc func openPodcastsFolder() {
+        let path = NSString(string: "~/Downloads/offline ai/podcasts").expandingTildeInPath
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    // MARK: - NSToolbarDelegate
+    func setupToolbar() {
+        let toolbar = NSToolbar(identifier: "AUToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconAndLabel
+        window.toolbar = toolbar
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        return [
+            NSToolbarItem.Identifier("VoiceAssistantItem"),
+            NSToolbarItem.Identifier("PodcastItem"),
+            .flexibleSpace,
+            NSToolbarItem.Identifier("OpenPodcastsItem"),
+            NSToolbarItem.Identifier("StatusItem")
+        ]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        return toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier.rawValue == "VoiceAssistantItem" {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Personal Assistant"
+            item.paletteLabel = "Personal Assistant"
+            item.toolTip = "Toggle independent hands-free Mac automation assistant"
+
+            let btn = NSButton(title: " Start Assistant", target: self, action: #selector(toggleVoiceAssistant))
+            btn.bezelStyle = .rounded
+            btn.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Mic")
+            btn.imagePosition = .imageLeading
+            voiceToolbarButton = btn
+            item.view = btn
+            return item
+        } else if itemIdentifier.rawValue == "PodcastItem" {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Audio Podcast"
+            item.paletteLabel = "Audio Podcast"
+            item.toolTip = "Synthesize two-host audio podcast (.m4a) from current chat notes"
+
+            let btn = NSButton(title: " Make Podcast", target: self, action: #selector(generatePodcast))
+            btn.bezelStyle = .rounded
+            btn.image = NSImage(systemSymbolName: "headphones", accessibilityDescription: "Podcast")
+            btn.imagePosition = .imageLeading
+            item.view = btn
+            return item
+        } else if itemIdentifier.rawValue == "OpenPodcastsItem" {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Saved Audio"
+            item.paletteLabel = "Saved Audio"
+            item.toolTip = "Open podcasts archive in Finder"
+
+            let btn = NSButton(title: " Saved Audio", target: self, action: #selector(openPodcastsFolder))
+            btn.bezelStyle = .rounded
+            btn.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: "Folder")
+            btn.imagePosition = .imageLeading
+            item.view = btn
+            return item
+        } else if itemIdentifier.rawValue == "StatusItem" {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            let label = NSTextField(labelWithString: "🟢 M4 Metal Engine")
+            label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = NSColor.secondaryLabelColor
+            item.view = label
+            return item
+        }
+        return nil
+    }
+
+    // MARK: - Backend Verification
     func ensureBackendRunning() {
         let task = Process()
         task.launchPath = "/bin/bash"
@@ -101,7 +300,7 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         webView.load(request)
     }
 
-    // MARK: - WKUIDelegate: File Upload, Alerts & Media Permissions
+    // MARK: - WKUIDelegate & Permissions
     @available(macOS 12.0, *)
     func webView(
         _ webView: WKWebView,
@@ -218,6 +417,15 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit AU", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
+        // Assistant Menu
+        let assistantMenuItem = NSMenuItem()
+        mainMenu.addItem(assistantMenuItem)
+        let assistantMenu = NSMenu(title: "Assistant")
+        assistantMenuItem.submenu = assistantMenu
+        assistantMenu.addItem(withTitle: "Toggle Voice Assistant", action: #selector(toggleVoiceAssistant), keyEquivalent: "A")
+        assistantMenu.addItem(withTitle: "Make Audio Podcast", action: #selector(generatePodcast), keyEquivalent: "P")
+        assistantMenu.addItem(withTitle: "Open Saved Podcasts", action: #selector(openPodcastsFolder), keyEquivalent: "O")
+
         // Edit Menu
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
@@ -248,6 +456,10 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
 
         NSApp.mainMenu = mainMenu
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        stopVoiceAssistant()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
