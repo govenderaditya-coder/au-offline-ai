@@ -101,7 +101,18 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         webView.load(request)
     }
 
-    // MARK: - WKUIDelegate: File Upload & Alerts
+    // MARK: - WKUIDelegate: File Upload, Alerts & Media Permissions
+    @available(macOS 12.0, *)
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        decisionHandler(.grant)
+    }
+
     func webView(
         _ webView: WKWebView,
         runOpenPanelWith parameters: WKOpenPanelParameters,
