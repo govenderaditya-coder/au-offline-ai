@@ -15,6 +15,32 @@ guard let content = try? String(contentsOfFile: inputFile, encoding: .utf8) else
     exit(1)
 }
 
+func getHost1Voice() -> String {
+    let task = Process()
+    task.launchPath = "/usr/bin/say"
+    task.arguments = ["-v", "?"]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    try? task.run()
+    task.waitUntilExit()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    if let out = String(data: data, encoding: .utf8) {
+        for l in out.components(separatedBy: .newlines) {
+            let lower = l.lowercased()
+            if lower.contains("aditya") || lower.contains("personal") {
+                let parts = l.components(separatedBy: .whitespaces)
+                if let name = parts.first, !name.isEmpty {
+                    return name
+                }
+            }
+        }
+    }
+    return "Samantha"
+}
+
+let host1Voice = getHost1Voice()
+let host2Voice = "Daniel"
+
 let lines = content.components(separatedBy: .newlines)
 let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -22,26 +48,29 @@ try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectorie
 var audioFiles: [URL] = []
 var step = 0
 
-print("🎙️ Synthesizing podcast dialogue...")
+print("🎙️ Synthesizing podcast dialogue (Host 1: \(host1Voice), Host 2: \(host2Voice))...")
 
 for rawLine in lines {
     let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
     if line.isEmpty { continue }
 
-    var voice = "Samantha"
+    var voice = host1Voice
     var dialogue = line
 
-    if line.lowercased().hasPrefix("samantha:") {
-        voice = "Samantha"
+    if line.lowercased().hasPrefix("aditya:") {
+        voice = host1Voice
+        dialogue = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+    } else if line.lowercased().hasPrefix("samantha:") {
+        voice = host1Voice
         dialogue = String(line.dropFirst(9)).trimmingCharacters(in: .whitespaces)
     } else if line.lowercased().hasPrefix("daniel:") {
-        voice = "Daniel"
+        voice = host2Voice
         dialogue = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
     } else if line.lowercased().hasPrefix("host 1:") {
-        voice = "Samantha"
+        voice = host1Voice
         dialogue = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
     } else if line.lowercased().hasPrefix("host 2:") {
-        voice = "Daniel"
+        voice = host2Voice
         dialogue = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
     }
 
