@@ -15,7 +15,16 @@ guard let content = try? String(contentsOfFile: inputFile, encoding: .utf8) else
     exit(1)
 }
 
+let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+let clonedVoiceWav = "\(homeDir)/Downloads/offline ai/voice_profile/my_voice.wav"
+let clonedVoiceTxt = "\(homeDir)/Downloads/offline ai/voice_profile/my_voice.txt"
+let clonerPython = "\(homeDir)/Downloads/offline ai/.venv-cloner/bin/python"
+let hasClonedVoice = FileManager.default.fileExists(atPath: clonedVoiceWav)
+
 func getHost1Voice() -> String {
+    if hasClonedVoice {
+        return "Aditya (Cloned Voice)"
+    }
     let task = Process()
     task.launchPath = "/usr/bin/say"
     task.arguments = ["-v", "?"]
@@ -27,7 +36,7 @@ func getHost1Voice() -> String {
     if let out = String(data: data, encoding: .utf8) {
         for l in out.components(separatedBy: .newlines) {
             let lower = l.lowercased()
-            if lower.contains("aditya") || lower.contains("personal") {
+            if lower.contains("ai female") || lower.contains("aditya") || lower.contains("personal") {
                 let parts = l.components(separatedBy: .whitespaces)
                 if let name = parts.first, !name.isEmpty {
                     return name
@@ -54,40 +63,65 @@ for rawLine in lines {
     let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
     if line.isEmpty { continue }
 
-    var voice = host1Voice
+    var isHost1 = true
     var dialogue = line
 
     if line.lowercased().hasPrefix("aditya:") {
-        voice = host1Voice
+        isHost1 = true
         dialogue = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
     } else if line.lowercased().hasPrefix("samantha:") {
-        voice = host1Voice
+        isHost1 = true
         dialogue = String(line.dropFirst(9)).trimmingCharacters(in: .whitespaces)
     } else if line.lowercased().hasPrefix("daniel:") {
-        voice = host2Voice
+        isHost1 = false
         dialogue = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
     } else if line.lowercased().hasPrefix("host 1:") {
-        voice = host1Voice
+        isHost1 = true
         dialogue = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
     } else if line.lowercased().hasPrefix("host 2:") {
-        voice = host2Voice
+        isHost1 = false
         dialogue = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
     }
 
     if dialogue.isEmpty { continue }
 
     step += 1
-    let lineFile = tempDir.appendingPathComponent("line_\(step).m4a")
+    let lineExt = (isHost1 && hasClonedVoice) ? "wav" : "m4a"
+    let lineFile = tempDir.appendingPathComponent("line_\(step).\(lineExt)")
 
-    let process = Process()
-    process.launchPath = "/usr/bin/say"
-    process.arguments = ["-v", voice, "-o", lineFile.path, dialogue]
-    process.launch()
-    process.waitUntilExit()
+    if isHost1 && hasClonedVoice {
+        var refText = "Hello, this is my personal AI assistant AU running offline on my Mac."
+        if let savedText = try? String(contentsOfFile: clonedVoiceTxt, encoding: .utf8) {
+            let t = savedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { refText = t }
+        }
+
+        let process = Process()
+        process.launchPath = clonerPython
+        process.arguments = [
+            "-m", "f5_tts_mlx.generate",
+            "--text", dialogue,
+            "--ref-audio", clonedVoiceWav,
+            "--ref-text", refText,
+            "--steps", "16",
+            "--q", "8",
+            "--output", lineFile.path
+        ]
+        process.launch()
+        process.waitUntilExit()
+    } else {
+        let voiceName = isHost1 ? (host1Voice == "Aditya (Cloned Voice)" ? "Samantha" : host1Voice) : host2Voice
+        let process = Process()
+        process.launchPath = "/usr/bin/say"
+        process.arguments = ["-v", voiceName, "-o", lineFile.path, dialogue]
+        process.launch()
+        process.waitUntilExit()
+    }
 
     if FileManager.default.fileExists(atPath: lineFile.path) {
         audioFiles.append(lineFile)
-        print("  [\(step)] \(voice): \(dialogue.prefix(40))...")
+        let speakerName = isHost1 ? host1Voice : host2Voice
+        print("  [\(step)] \(speakerName): \(dialogue.prefix(40))...")
     }
 }
 

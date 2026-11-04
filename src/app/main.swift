@@ -224,6 +224,20 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     }
 
     // MARK: - Personal Voice Actions
+    @objc func launchVoiceCloner() {
+        let scriptPath = NSString(string: "~/Downloads/offline ai/tools/au-clone-voice").expandingTildeInPath
+        let appleScript = """
+        tell application "Terminal"
+            activate
+            do script "\"\(scriptPath)\""
+        end tell
+        """
+        if let script = NSAppleScript(source: appleScript) {
+            var errorInfo: NSDictionary?
+            script.executeAndReturnError(&errorInfo)
+        }
+    }
+
     @objc func testPersonalVoice() {
         DispatchQueue.global(qos: .userInitiated).async {
             speakWithPersonalVoice(text: "Hello Aditya! Your AI female personal voice is now connected to AU.")
@@ -271,6 +285,7 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         return [
             NSToolbarItem.Identifier("VoiceAssistantItem"),
+            NSToolbarItem.Identifier("CloneVoiceItem"),
             NSToolbarItem.Identifier("PodcastItem"),
             .flexibleSpace,
             NSToolbarItem.Identifier("OpenPodcastsItem"),
@@ -294,6 +309,18 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
             btn.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Mic")
             btn.imagePosition = .imageLeading
             voiceToolbarButton = btn
+            item.view = btn
+            return item
+        } else if itemIdentifier.rawValue == "CloneVoiceItem" {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Clone Voice"
+            item.paletteLabel = "Instant Voice Clone"
+            item.toolTip = "Record a 5-10 second clip to clone your voice instantly offline using M4 MLX"
+
+            let btn = NSButton(title: " Clone Voice", target: self, action: #selector(launchVoiceCloner))
+            btn.bezelStyle = .rounded
+            btn.image = NSImage(systemSymbolName: "waveform.badge.plus", accessibilityDescription: "Clone Voice")
+            btn.imagePosition = .imageLeading
             item.view = btn
             return item
         } else if itemIdentifier.rawValue == "PodcastItem" {
@@ -479,6 +506,7 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         assistantMenu.addItem(withTitle: "Make Audio Podcast", action: #selector(generatePodcast), keyEquivalent: "P")
         assistantMenu.addItem(withTitle: "Open Saved Podcasts", action: #selector(openPodcastsFolder), keyEquivalent: "O")
         assistantMenu.addItem(NSMenuItem.separator())
+        assistantMenu.addItem(withTitle: "Clone Voice (Instant 10s MLX)...", action: #selector(launchVoiceCloner), keyEquivalent: "K")
         assistantMenu.addItem(withTitle: "Test Personal Voice (AI female)", action: #selector(testPersonalVoice), keyEquivalent: "T")
         assistantMenu.addItem(withTitle: "Personal Voice Settings...", action: #selector(showPersonalVoiceGuide), keyEquivalent: "")
 
