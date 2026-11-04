@@ -15,9 +15,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
+    <string>1.2.0</string>
     <key>CFBundleVersion</key>
-    <string>1.1.0</string>
+    <string>1.2.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>
@@ -26,6 +26,8 @@
     <string>AU uses the microphone to listen to your voice commands.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>AU uses speech recognition to process your voice offline.</string>
+    <key>NSPersonalVoiceUsageDescription</key>
+    <string>AU uses your Personal Voice (AI female) to speak responses in your own voice.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

@@ -1,5 +1,6 @@
 import Cocoa
 import WebKit
+import AVFoundation
 
 class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, NSToolbarDelegate {
     var window: NSWindow!
@@ -20,6 +21,10 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         setupMenu()
         ensureBackendRunning()
+
+        if #available(macOS 14.0, *) {
+            AVSpeechSynthesizer.requestPersonalVoiceAuthorization { _ in }
+        }
 
         let windowSize = NSSize(width: 1280, height: 860)
         let screenRect = NSScreen.main?.visibleFrame ?? NSRect(origin: .zero, size: windowSize)

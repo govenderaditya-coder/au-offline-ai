@@ -2,7 +2,7 @@
 """
 AU Voice Assistant — Hands-Free Voice Agent
 Powered by Native macOS CoreAudio VAD + Local Faster-Whisper + Ollama M4 Engine
-Supports Apple Personal Voice Cloning (Auto-switches to your voice!)
+Integrated with Apple Personal Voice (AI female)
 """
 
 import os
@@ -14,6 +14,7 @@ import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RECORD_TOOL = os.path.join(SCRIPT_DIR, "tools", "au-record")
+SPEAK_TOOL = os.path.join(SCRIPT_DIR, "tools", "au-speak")
 ACTIONS_MODULE = os.path.join(SCRIPT_DIR, "src", "app")
 sys.path.insert(0, ACTIONS_MODULE)
 
@@ -29,30 +30,19 @@ print("✅ \033[1;32m[READY]\033[0m Neural Voice Engine loaded!")
 
 MODEL_NAME = "au-assistant:latest"
 
-def get_best_voice() -> tuple[str, bool]:
-    """Detects if user's Personal Voice (e.g. 'Aditya') is trained and available in macOS."""
-    try:
-        res = subprocess.run(["say", "-v", "?"], capture_output=True, text=True)
-        for line in res.stdout.splitlines():
-            name = line.split()[0]
-            if "aditya" in name.lower() or "personal" in name.lower():
-                return name, True
-    except Exception:
-        pass
-    return "Samantha", False
-
 def speak(text: str):
-    """Speaks text using macOS native speech synthesis (blocking)."""
+    """Speaks text using native AU speech engine with AI female Personal Voice."""
     if not text:
         return
     cleaned = text.replace("*", "").replace("#", "").replace("[", "").replace("]", "").strip()
     if not cleaned:
         return
     
-    voice, is_personal = get_best_voice()
-    voice_label = f"\033[1;32m{voice} (YOUR CLONED VOICE)\033[0m" if is_personal else f"\033[1;33m{voice}\033[0m"
-    print(f"\n🗣️ [AU SPEAKING via {voice_label}]: {cleaned}\n")
-    subprocess.run(["say", "-v", voice, cleaned])
+    print(f"\n🗣️ \033[1;33m[AU SPEAKING]:\033[0m {cleaned}\n")
+    if os.path.exists(SPEAK_TOOL):
+        subprocess.run([SPEAK_TOOL, cleaned])
+    else:
+        subprocess.run(["say", "-v", "Samantha", cleaned])
 
 def query_au(user_prompt: str) -> str:
     """Queries the local Ollama au-assistant model."""
@@ -120,9 +110,6 @@ def process_command(command: str):
     return "continue"
 
 def main():
-    voice, is_personal = get_best_voice()
-    voice_desc = f"\033[1;32m{voice} (Personal Voice Active!)\033[0m" if is_personal else f"\033[1;33m{voice} (Default — Waiting for Personal Voice training)\033[0m"
-
     print("""
 ╔══════════════════════════════════════════════════════════════╗
 ║             🤖 AU — HANDS-FREE VOICE ASSISTANT               ║
@@ -131,13 +118,13 @@ def main():
     """)
     print("• Mode:         \033[1;32mHands-Free Interactive (No keyboard needed)\033[0m")
     print("• Speech Input: \033[1;32mLocal Neural Whisper + CoreAudio VAD\033[0m")
-    print(f"• Speech Voice: {voice_desc}")
+    print("• Speech Output:\033[1;32m Apple Personal Voice (AI female)\033[0m")
     print("• Voice Lock:   \033[1;32m" + ("Active (Aditya)" if au_voice_id.is_voice_lock_active() else "Available") + "\033[0m")
     print("-" * 64)
     print("👉 Simply start speaking. When you finish, AU responds automatically.")
     print("👉 Say \033[1;33m'Go to sleep'\033[0m to pause, or \033[1;31mCtrl+C\033[0m to quit.\n")
 
-    speak("Hello Aditya! AU is listening. Speak your command anytime.")
+    speak("Hello Aditya! AU is online with your AI female voice. Speak your command anytime.")
 
     is_sleeping = False
 
