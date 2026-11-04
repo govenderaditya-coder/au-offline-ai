@@ -564,27 +564,17 @@ func speakWithPersonalVoice(text: String) {
         }
     }
 
-    // 2. Look for female / aditya voice
-    if selectedVoice == nil {
-        for v in voices {
-            let nameLower = v.name.lowercased()
-            if nameLower.contains("female") || nameLower.contains("aditya") {
-                selectedVoice = v
-                break
-            }
-        }
-    }
-
-    // 3. Fallback to Samantha
-    if selectedVoice == nil {
-        selectedVoice = voices.first(where: { $0.name == "Samantha" }) ?? AVSpeechSynthesisVoice(language: "en-US")
-    }
-
     let isPersonal = isVoiceClonedOrPersonal(selectedVoice)
-    fputs("🗣️ [AU Voice: \(selectedVoice?.name ?? "Default")\(isPersonal ? " ⭐ (YOUR CLONED PERSONAL VOICE)" : "")]\n", stderr)
+    if isPersonal {
+        fputs("🗣️ [AU Voice: \(selectedVoice?.name ?? "AI female") ⭐ (YOUR CLONED PERSONAL VOICE)]\n", stderr)
+    } else {
+        fputs("ℹ️ [AU Voice: 'AI female' is generating in macOS Neural Engine. Using Mac System Voice until ready]\n", stderr)
+    }
 
     let utterance = AVSpeechUtterance(string: trimmed)
-    utterance.voice = selectedVoice
+    if let voice = selectedVoice {
+        utterance.voice = voice
+    }
     utterance.rate = 0.51
     utterance.pitchMultiplier = 1.0
 
