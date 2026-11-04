@@ -22,3 +22,4 @@ podcasts/*.wav
 __pycache__/
 *.pyc
 .venv/
+.webui_secret_key

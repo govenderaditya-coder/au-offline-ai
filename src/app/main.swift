@@ -23,7 +23,18 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         ensureBackendRunning()
 
         if #available(macOS 14.0, *) {
-            AVSpeechSynthesizer.requestPersonalVoiceAuthorization { _ in }
+            AVSpeechSynthesizer.requestPersonalVoiceAuthorization { status in
+                DispatchQueue.main.async {
+                    switch status {
+                    case .authorized:
+                        print("✅ Personal Voice authorized for AU!")
+                    case .denied:
+                        print("ℹ️ Personal Voice access awaiting permission or toggle in System Settings.")
+                    default:
+                        break
+                    }
+                }
+            }
         }
 
         let windowSize = NSSize(width: 1280, height: 860)
@@ -210,6 +221,43 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     @objc func openPodcastsFolder() {
         let path = NSString(string: "~/Downloads/offline ai/podcasts").expandingTildeInPath
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    // MARK: - Personal Voice Actions
+    @objc func testPersonalVoice() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            speakWithPersonalVoice(text: "Hello Aditya! Your AI female personal voice is now connected to AU.")
+        }
+    }
+
+    @objc func showPersonalVoiceGuide() {
+        let alert = NSAlert()
+        alert.messageText = "Personal Voice Setup (AI female)"
+        alert.informativeText = """
+        To ensure your cloned 'AI female' voice works seamlessly across AU:
+
+        1. In System Settings → Accessibility → Personal Voice:
+           Ensure 'Allow apps to request to use' is toggled ON.
+           (If the voice still says 'Generating', plug in power and lock your screen).
+
+        2. In System Settings → Accessibility → Spoken Content:
+           Set 'System Voice' to 'AI female'. This makes it the system-wide default voice.
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Open Personal Voice Settings")
+        alert.addButton(withTitle: "Open Spoken Content")
+        alert.addButton(withTitle: "Done")
+        alert.beginSheetModal(for: self.window) { response in
+            if response == .alertFirstButtonReturn {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.universalaccess?PersonalVoice") {
+                    NSWorkspace.shared.open(url)
+                }
+            } else if response == .alertSecondButtonReturn {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
     }
 
     // MARK: - NSToolbarDelegate
@@ -430,6 +478,9 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         assistantMenu.addItem(withTitle: "Toggle Voice Assistant", action: #selector(toggleVoiceAssistant), keyEquivalent: "A")
         assistantMenu.addItem(withTitle: "Make Audio Podcast", action: #selector(generatePodcast), keyEquivalent: "P")
         assistantMenu.addItem(withTitle: "Open Saved Podcasts", action: #selector(openPodcastsFolder), keyEquivalent: "O")
+        assistantMenu.addItem(NSMenuItem.separator())
+        assistantMenu.addItem(withTitle: "Test Personal Voice (AI female)", action: #selector(testPersonalVoice), keyEquivalent: "T")
+        assistantMenu.addItem(withTitle: "Personal Voice Settings...", action: #selector(showPersonalVoiceGuide), keyEquivalent: "")
 
         // Edit Menu
         let editMenuItem = NSMenuItem()
@@ -470,6 +521,94 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
+}
+
+// MARK: - Voice Synthesis Helper
+class SpeakerDelegate: NSObject, AVSpeechSynthesizerDelegate {
+    let sem = DispatchSemaphore(value: 0)
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        sem.signal()
+    }
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        sem.signal()
+    }
+}
+
+func isVoiceClonedOrPersonal(_ voice: AVSpeechSynthesisVoice?) -> Bool {
+    guard let voice = voice else { return false }
+    if voice.name.lowercased().contains("ai female") || voice.name.lowercased() == "ai female" {
+        return true
+    }
+    if #available(macOS 14.0, *) {
+        return voice.voiceTraits.contains(.isPersonalVoice)
+    }
+    return false
+}
+
+func speakWithPersonalVoice(text: String) {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return }
+
+    let synthesizer = AVSpeechSynthesizer()
+    let delegate = SpeakerDelegate()
+    synthesizer.delegate = delegate
+
+    let voices = AVSpeechSynthesisVoice.speechVoices()
+    var selectedVoice: AVSpeechSynthesisVoice? = nil
+
+    // 1. Look for AI female or Personal Voice
+    for v in voices {
+        if isVoiceClonedOrPersonal(v) {
+            selectedVoice = v
+            break
+        }
+    }
+
+    // 2. Look for female / aditya voice
+    if selectedVoice == nil {
+        for v in voices {
+            let nameLower = v.name.lowercased()
+            if nameLower.contains("female") || nameLower.contains("aditya") {
+                selectedVoice = v
+                break
+            }
+        }
+    }
+
+    // 3. Fallback to Samantha
+    if selectedVoice == nil {
+        selectedVoice = voices.first(where: { $0.name == "Samantha" }) ?? AVSpeechSynthesisVoice(language: "en-US")
+    }
+
+    let isPersonal = isVoiceClonedOrPersonal(selectedVoice)
+    fputs("🗣️ [AU Voice: \(selectedVoice?.name ?? "Default")\(isPersonal ? " ⭐ (YOUR CLONED PERSONAL VOICE)" : "")]\n", stderr)
+
+    let utterance = AVSpeechUtterance(string: trimmed)
+    utterance.voice = selectedVoice
+    utterance.rate = 0.51
+    utterance.pitchMultiplier = 1.0
+
+    synthesizer.speak(utterance)
+    _ = delegate.sem.wait(timeout: .now() + 120.0)
+}
+
+// MARK: - CLI Mode Dispatcher
+if CommandLine.arguments.contains("--speak") {
+    if let idx = CommandLine.arguments.firstIndex(of: "--speak"), idx + 1 < CommandLine.arguments.count {
+        let textToSpeak = CommandLine.arguments[(idx + 1)...].joined(separator: " ")
+        speakWithPersonalVoice(text: textToSpeak)
+        exit(0)
+    }
+}
+
+if CommandLine.arguments.contains("--list-voices") {
+    let voices = AVSpeechSynthesisVoice.speechVoices()
+    print("Total voices available: \(voices.count)")
+    for v in voices {
+        let isPersonal = isVoiceClonedOrPersonal(v)
+        print("- \(v.name) (\(v.language))\(isPersonal ? " ⭐ [PERSONAL VOICE]" : "")")
+    }
+    exit(0)
 }
 
 let app = NSApplication.shared
