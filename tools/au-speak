@@ -1,0 +1,48 @@
+#!/bin/bash
+# AU Voice Dispatcher — Modular & Reliable
+# Supports Male (Daniel), Female (Samantha), and Optional Cloned Voice
+
+CONFIG_FILE="$HOME/.offline-ai/voice_config.json"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VOICE_SAMPLE="$PROJECT_DIR/voice_profile/my_voice.wav"
+CLONER_PYTHON="$PROJECT_DIR/.venv-cloner/bin/python"
+MLX_SPEAK="$PROJECT_DIR/src/app/au_mlx_speak.py"
+
+# Default voice mode is female (Samantha)
+VOICE_MODE="female"
+
+# Check saved user preference if exists
+if [ -f "$CONFIG_FILE" ]; then
+    SAVED_MODE=$(grep -o '"voice_gender"[^,]*' "$CONFIG_FILE" | cut -d':' -f2 | tr -d ' "')
+    if [ -n "$SAVED_MODE" ]; then
+        VOICE_MODE="$SAVED_MODE"
+    fi
+fi
+
+# Override by flag if provided
+if [ "$1" == "--male" ]; then
+    VOICE_MODE="male"
+    shift
+elif [ "$1" == "--female" ]; then
+    VOICE_MODE="female"
+    shift
+elif [ "$1" == "--cloned" ]; then
+    VOICE_MODE="cloned"
+    shift
+fi
+
+TEXT="$*"
+if [ -z "$TEXT" ]; then
+    exit 0
+fi
+
+if [ "$VOICE_MODE" == "cloned" ] && [ -f "$VOICE_SAMPLE" ] && [ -x "$CLONER_PYTHON" ]; then
+    # Cloned MLX Voice
+    exec "$CLONER_PYTHON" "$MLX_SPEAK" "$TEXT"
+elif [ "$VOICE_MODE" == "male" ]; then
+    # Built-in High Quality Male Voice
+    exec /usr/bin/say -v "Daniel" "$TEXT"
+else
+    # Built-in High Quality Female Voice
+    exec /usr/bin/say -v "Samantha" "$TEXT"
+fi

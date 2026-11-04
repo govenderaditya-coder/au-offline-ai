@@ -1,40 +1,51 @@
 #!/usr/bin/env python3
 """
-AU Instant Offline Voice Profiler
+AU Voice Cloning Studio — Separate & Isolated Module
 Captures a 5-10 second voice sample, transcribes it locally with Faster-Whisper,
 and binds it to Apple Silicon MLX for zero-shot voice cloning.
 """
 
 import os
 import sys
-import subprocess
+import json
 import time
+import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 PROFILE_DIR = os.path.join(PROJECT_DIR, "voice_profile")
 RECORD_TOOL = os.path.join(PROJECT_DIR, "tools", "au-record")
 PYTHON_BIN = os.path.join(PROJECT_DIR, ".venv-cloner", "bin", "python")
+CONFIG_FILE = os.path.expanduser("~/.offline-ai/voice_config.json")
 
 SAMPLE_WAV = os.path.join(PROFILE_DIR, "my_voice.wav")
 SAMPLE_TXT = os.path.join(PROFILE_DIR, "my_voice.txt")
 
 os.makedirs(PROFILE_DIR, exist_ok=True)
+os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
 
 def print_banner():
     print("\033[1;36m" + "=" * 65 + "\033[0m")
-    print("\033[1;33m       🎙️  AU INSTANT OFFLINE VOICE CLONER (M4 NEURAL MLX)  🎙️\033[0m")
+    print("\033[1;33m       🎙️  AU VOICE CLONING STUDIO (ISOLATED SEGMENT)  🎙️\033[0m")
     print("\033[1;36m" + "=" * 65 + "\033[0m\n")
 
 def record_sample():
     print_banner()
-    print("You only need to speak \033[1;32mONE short sentence\033[0m (5 to 10 seconds).")
-    print("AU will capture your tone, pitch, and voice characteristics 100% locally.\n")
-    print("\033[1;37mSuggested phrase to read aloud:\033[0m")
+    print("Record a short voice sample (5 to 10 seconds).")
+    print("Suggested sentence to speak:")
     print("\033[1;35m\"Hello, this is my personal AI assistant AU running offline on my Mac.\"\033[0m\n")
 
-    input("\033[1;33mPress [ENTER] to start recording...\033[0m ")
-    print("\n🔴 \033[1;31mRECORDING NOW... Speak clearly into your microphone!\033[0m")
+    if "--auto" not in sys.argv:
+        try:
+            input("\033[1;33mPress [ENTER] to start recording...\033[0m ")
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+    for i in range(3, 0, -1):
+        print(f"⏳ Starting in {i}...", end="\r", flush=True)
+        time.sleep(0.7)
+
+    print("\n🔴 \033[1;31mRECORDING NOW... Speak into your microphone!\033[0m")
     print("   (Recording stops automatically when you pause speaking)\n")
 
     if os.path.exists(SAMPLE_WAV):
@@ -43,10 +54,10 @@ def record_sample():
         except Exception:
             pass
 
-    # Use native CoreAudio Voice Activity Detection tool
+    # Explicitly pass target output path to au-record
     subprocess.run([RECORD_TOOL, SAMPLE_WAV])
 
-    if not os.path.exists(SAMPLE_WAV) or os.path.getsize(SAMPLE_WAV) < 1000:
+    if not os.path.exists(SAMPLE_WAV) or os.path.getsize(SAMPLE_WAV) < 5000:
         print("❌ Recording failed or was too short. Please try again.")
         return False
 
@@ -90,9 +101,18 @@ def test_cloned_voice(transcript):
     if os.path.exists(test_out):
         print("\n🎉 \033[1;32m[VOICE CLONE ACTIVATED!]\033[0m Playing your cloned greeting now...")
         subprocess.run(["afplay", test_out])
-        print("\n⭐ AU will now use YOUR voice for all responses, podcasts, and assistant dialogues!\n")
+
+        # Save config so AU knows cloned voice is available
+        config = {"voice_gender": "cloned", "male_voice": "Daniel", "female_voice": "Samantha"}
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+        except Exception:
+            pass
+
+        print("\n⭐ Your cloned voice is saved in the Voice Studio segment and ready whenever you choose 'Cloned Voice'!\n")
     else:
-        print("ℹ️ Voice profile saved. AU is ready to synthesize speech in your voice.")
+        print("ℹ️ Voice profile recorded. AU can use this voice when enabled.")
 
 if __name__ == "__main__":
     if record_sample():

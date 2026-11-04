@@ -15,7 +15,10 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     var isAssistantActive = false
     var voiceToolbarButton: NSButton?
     var assistantBanner: NSView?
+    var stateBadge: NSTextField?
+    var statusDetailLabel: NSTextField?
     var bannerLabel: NSTextField?
+    var voiceSegmentedControl: NSSegmentedControl?
     var bannerStopButton: NSButton?
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -109,32 +112,113 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         loadAU()
     }
 
-    // MARK: - Banner Setup (Displays Assistant Status)
+    // MARK: - Banner Setup (Displays Assistant Status & Interactive Controls)
     func setupAssistantBanner(in container: NSView, windowSize: NSSize) {
-        let bannerHeight: CGFloat = 40
+        let bannerHeight: CGFloat = 76
         let banner = NSView(frame: NSRect(x: 0, y: windowSize.height - bannerHeight, width: windowSize.width, height: bannerHeight))
         banner.autoresizingMask = [.width, .minYMargin]
         banner.wantsLayer = true
-        banner.layer?.backgroundColor = CGColor(red: 0.12, green: 0.14, blue: 0.20, alpha: 0.95)
+        banner.layer?.backgroundColor = CGColor(red: 0.09, green: 0.11, blue: 0.16, alpha: 0.98)
+        banner.layer?.borderWidth = 1
+        banner.layer?.borderColor = CGColor(red: 0.18, green: 0.22, blue: 0.30, alpha: 0.8)
         banner.isHidden = true
         self.assistantBanner = banner
 
-        let label = NSTextField(labelWithString: "🟢 Personal Voice Assistant is active across your Mac — speak commands anytime.")
-        label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        label.textColor = NSColor(red: 0.4, green: 0.9, blue: 0.5, alpha: 1.0)
-        label.frame = NSRect(x: 20, y: 8, width: windowSize.width - 150, height: 24)
-        label.autoresizingMask = [.width, .minYMargin]
-        banner.addSubview(label)
-        self.bannerLabel = label
+        // Row 1: State Badge (Left)
+        let badge = NSTextField(labelWithString: " 🟢 LISTENING (Your Turn) ")
+        badge.font = NSFont.systemFont(ofSize: 12, weight: .bold)
+        badge.textColor = NSColor(red: 0.35, green: 0.95, blue: 0.45, alpha: 1.0)
+        badge.alignment = .center
+        badge.wantsLayer = true
+        badge.layer?.cornerRadius = 6
+        badge.layer?.backgroundColor = CGColor(red: 0.12, green: 0.26, blue: 0.16, alpha: 0.9)
+        badge.frame = NSRect(x: 16, y: 44, width: 200, height: 24)
+        badge.autoresizingMask = [.minYMargin]
+        banner.addSubview(badge)
+        self.stateBadge = badge
 
-        let stopBtn = NSButton(title: "Stop Assistant", target: self, action: #selector(toggleVoiceAssistant))
-        stopBtn.bezelStyle = .inline
-        stopBtn.frame = NSRect(x: windowSize.width - 120, y: 8, width: 100, height: 24)
+        // Row 1: Status Detail (Center)
+        let detail = NSTextField(labelWithString: "Microphone active — speak any command anytime.")
+        detail.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        detail.textColor = NSColor(red: 0.88, green: 0.90, blue: 0.96, alpha: 1.0)
+        detail.frame = NSRect(x: 226, y: 44, width: max(200, windowSize.width - 550), height: 24)
+        detail.autoresizingMask = [.width, .minYMargin]
+        banner.addSubview(detail)
+        self.statusDetailLabel = detail
+
+        // Row 1: Voice Selector (Right)
+        let voiceLabel = NSTextField(labelWithString: "Voice:")
+        voiceLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        voiceLabel.textColor = NSColor.secondaryLabelColor
+        voiceLabel.alignment = .right
+        voiceLabel.frame = NSRect(x: windowSize.width - 325, y: 44, width: 45, height: 24)
+        voiceLabel.autoresizingMask = [.minXMargin, .minYMargin]
+        banner.addSubview(voiceLabel)
+
+        let voiceSelector = NSSegmentedControl(labels: ["👩 Female", "👨 Male", "🎙️ Cloned"], trackingMode: .selectOne, target: self, action: #selector(voiceSelectionChanged(_:)))
+        voiceSelector.selectedSegment = loadVoicePreference()
+        voiceSelector.frame = NSRect(x: windowSize.width - 275, y: 44, width: 255, height: 24)
+        voiceSelector.autoresizingMask = [.minXMargin, .minYMargin]
+        banner.addSubview(voiceSelector)
+        self.voiceSegmentedControl = voiceSelector
+
+        // Row 2: Live Transcript (Bottom Left)
+        let transcript = NSTextField(labelWithString: "💬 Tip: Say 'Play music on Spotify', 'What is my battery level?', or 'Search offline AI'")
+        transcript.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        transcript.textColor = NSColor(red: 0.65, green: 0.78, blue: 0.95, alpha: 1.0)
+        transcript.frame = NSRect(x: 16, y: 10, width: max(300, windowSize.width - 280), height: 24)
+        transcript.autoresizingMask = [.width, .minYMargin]
+        banner.addSubview(transcript)
+        self.bannerLabel = transcript
+
+        // Row 2: Studio Button (Bottom Center-Right)
+        let studioBtn = NSButton(title: "🎙️ Voice Studio", target: self, action: #selector(launchVoiceCloner))
+        studioBtn.bezelStyle = .rounded
+        studioBtn.frame = NSRect(x: windowSize.width - 250, y: 8, width: 125, height: 26)
+        studioBtn.autoresizingMask = [.minXMargin, .minYMargin]
+        banner.addSubview(studioBtn)
+
+        // Row 2: Stop Button (Bottom Right)
+        let stopBtn = NSButton(title: "⏹️ Stop", target: self, action: #selector(toggleVoiceAssistant))
+        stopBtn.bezelStyle = .rounded
+        stopBtn.frame = NSRect(x: windowSize.width - 120, y: 8, width: 100, height: 26)
         stopBtn.autoresizingMask = [.minXMargin, .minYMargin]
         banner.addSubview(stopBtn)
         self.bannerStopButton = stopBtn
 
         container.addSubview(banner)
+    }
+
+    // MARK: - Voice Settings Dispatcher
+    @objc func voiceSelectionChanged(_ sender: NSSegmentedControl) {
+        var mode = "female"
+        if sender.selectedSegment == 1 { mode = "male" }
+        else if sender.selectedSegment == 2 { mode = "cloned" }
+        saveVoicePreference(mode: mode)
+        statusDetailLabel?.stringValue = "Assistant Voice changed to: \(sender.label(forSegment: sender.selectedSegment) ?? mode)"
+    }
+
+    func saveVoicePreference(mode: String) {
+        let path = NSString(string: "~/.offline-ai/voice_config.json").expandingTildeInPath
+        let dict: [String: String] = [
+            "voice_gender": mode,
+            "male_voice": "Daniel",
+            "female_voice": "Samantha"
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    func loadVoicePreference() -> Int {
+        let path = NSString(string: "~/.offline-ai/voice_config.json").expandingTildeInPath
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let gender = dict["voice_gender"] as? String {
+            if gender == "male" { return 1 }
+            if gender == "cloned" { return 2 }
+        }
+        return 0 // default female
     }
 
     // MARK: - Independent Voice Assistant Controller
@@ -192,6 +276,7 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
             voiceToolbarButton?.title = " Assistant: ACTIVE"
             voiceToolbarButton?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "Active")
             assistantBanner?.isHidden = false
+            updateStateBadge(state: "LISTENING")
         } else {
             voiceToolbarButton?.title = " Start Assistant"
             voiceToolbarButton?.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Mic")
@@ -199,13 +284,63 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         }
     }
 
+    func updateStateBadge(state: String) {
+        guard let badge = stateBadge else { return }
+        switch state {
+        case "LISTENING":
+            badge.stringValue = " 🟢 LISTENING (Your Turn) "
+            badge.textColor = NSColor(red: 0.35, green: 0.95, blue: 0.45, alpha: 1.0)
+            badge.layer?.backgroundColor = CGColor(red: 0.12, green: 0.26, blue: 0.16, alpha: 0.9)
+            statusDetailLabel?.stringValue = "Microphone active — speak your command now."
+        case "HEARING":
+            badge.stringValue = " 🔴 RECORDING SPEECH "
+            badge.textColor = NSColor(red: 1.0, green: 0.4, blue: 0.4, alpha: 1.0)
+            badge.layer?.backgroundColor = CGColor(red: 0.35, green: 0.12, blue: 0.12, alpha: 0.9)
+            statusDetailLabel?.stringValue = "Hearing speech... Speak clearly."
+        case "THINKING":
+            badge.stringValue = " 🟡 THINKING (M4 Brain) "
+            badge.textColor = NSColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1.0)
+            badge.layer?.backgroundColor = CGColor(red: 0.32, green: 0.26, blue: 0.10, alpha: 0.9)
+            statusDetailLabel?.stringValue = "Running local Ollama model (au-assistant)..."
+        case "EXECUTING":
+            badge.stringValue = " ⚡ AUTOMATING MAC "
+            badge.textColor = NSColor(red: 0.4, green: 0.85, blue: 1.0, alpha: 1.0)
+            badge.layer?.backgroundColor = CGColor(red: 0.10, green: 0.25, blue: 0.35, alpha: 0.9)
+            statusDetailLabel?.stringValue = "Executing Mac system automation..."
+        case "SPEAKING":
+            badge.stringValue = " 🔵 AU SPEAKING "
+            badge.textColor = NSColor(red: 0.55, green: 0.75, blue: 1.0, alpha: 1.0)
+            badge.layer?.backgroundColor = CGColor(red: 0.15, green: 0.22, blue: 0.35, alpha: 0.9)
+            statusDetailLabel?.stringValue = "Answering your request with voice..."
+        case "STANDBY":
+            badge.stringValue = " 💤 STANDBY "
+            badge.textColor = NSColor.secondaryLabelColor
+            badge.layer?.backgroundColor = CGColor(red: 0.2, green: 0.2, blue: 0.2, alpha: 0.9)
+            statusDetailLabel?.stringValue = "Assistant asleep. Say 'Wake up AU'..."
+        default:
+            break
+        }
+    }
+
     func handleAssistantLog(_ log: String) {
-        if log.contains("[YOU SAID]:") {
-            let clean = log.components(separatedBy: "[YOU SAID]:").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            bannerLabel?.stringValue = "🎙️ Heard: \(clean)"
-        } else if log.contains("[AU SPEAKING]:") {
-            let clean = log.components(separatedBy: "[AU SPEAKING]:").last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            bannerLabel?.stringValue = "🤖 AU: \(clean)"
+        let lines = log.components(separatedBy: .newlines)
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty { continue }
+
+            if line.contains("[AU_STATE:") {
+                let state = line.components(separatedBy: "[AU_STATE:").last?.components(separatedBy: "]").first ?? ""
+                updateStateBadge(state: state)
+            } else if line.contains("[AU_USER_TEXT:") {
+                let text = line.components(separatedBy: "[AU_USER_TEXT:").last?.components(separatedBy: "]").first ?? ""
+                bannerLabel?.stringValue = "👤 You: \"\(text)\""
+            } else if line.contains("[AU_RESPONSE_TEXT:") {
+                let text = line.components(separatedBy: "[AU_RESPONSE_TEXT:").last?.components(separatedBy: "]").first ?? ""
+                bannerLabel?.stringValue = "🤖 AU: \"\(text)\""
+            } else if line.contains("[AU_ACTION:") {
+                let act = line.components(separatedBy: "[AU_ACTION:").last?.components(separatedBy: "]").first ?? ""
+                bannerLabel?.stringValue = "⚡ Executed: \(act)"
+            }
         }
     }
 
@@ -223,19 +358,16 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
-    // MARK: - Personal Voice Actions
+    // MARK: - Voice Studio Actions (Isolated)
     @objc func launchVoiceCloner() {
         let scriptPath = NSString(string: "~/Downloads/offline ai/tools/au-clone-voice").expandingTildeInPath
-        let appleScript = """
-        tell application "Terminal"
-            activate
-            do script "\"\(scriptPath)\""
-        end tell
+        let terminalScript = """
+        osascript -e 'tell application "Terminal" to do script "\(scriptPath)"'
         """
-        if let script = NSAppleScript(source: appleScript) {
-            var errorInfo: NSDictionary?
-            script.executeAndReturnError(&errorInfo)
-        }
+        let process = Process()
+        process.launchPath = "/bin/bash"
+        process.arguments = ["-c", terminalScript]
+        try? process.run()
     }
 
     @objc func testPersonalVoice() {
