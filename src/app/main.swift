@@ -21,24 +21,15 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     var voiceSegmentedControl: NSSegmentedControl?
     var bannerStopButton: NSButton?
 
+    // Artifacts Drawer & Persona Engine
+    var artifactsDrawer: NSView?
+    var artifactsWebView: WKWebView?
+    var isArtifactsDrawerOpen: Bool = false
+    var personaSegmentedControl: NSSegmentedControl?
+
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         setupMenu()
         ensureBackendRunning()
-
-        if #available(macOS 14.0, *) {
-            AVSpeechSynthesizer.requestPersonalVoiceAuthorization { status in
-                DispatchQueue.main.async {
-                    switch status {
-                    case .authorized:
-                        print("✅ Personal Voice authorized for AU!")
-                    case .denied:
-                        print("ℹ️ Personal Voice access awaiting permission or toggle in System Settings.")
-                    default:
-                        break
-                    }
-                }
-            }
-        }
 
         let windowSize = NSSize(width: 1280, height: 860)
         let screenRect = NSScreen.main?.visibleFrame ?? NSRect(origin: .zero, size: windowSize)
@@ -82,6 +73,7 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         container.addSubview(webView)
 
         setupAssistantBanner(in: container, windowSize: windowSize)
+        setupArtifactsDrawer(in: container, windowSize: windowSize)
 
         // Loading Overlay
         loadingView = NSView(frame: container.bounds)
@@ -189,6 +181,252 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         container.addSubview(banner)
     }
 
+    // MARK: - LibreChat-Style Artifacts Drawer Setup
+    func setupArtifactsDrawer(in container: NSView, windowSize: NSSize) {
+        let drawerWidth: CGFloat = 440
+        let drawer = NSView(frame: NSRect(x: windowSize.width - drawerWidth, y: 0, width: drawerWidth, height: windowSize.height))
+        drawer.autoresizingMask = [.minXMargin, .height]
+        drawer.wantsLayer = true
+        drawer.layer?.backgroundColor = CGColor(red: 0.08, green: 0.10, blue: 0.14, alpha: 1.0)
+        drawer.layer?.borderWidth = 1
+        drawer.layer?.borderColor = CGColor(red: 0.18, green: 0.22, blue: 0.30, alpha: 0.9)
+        drawer.isHidden = true
+        self.artifactsDrawer = drawer
+
+        let headerHeight: CGFloat = 44
+        let header = NSView(frame: NSRect(x: 0, y: windowSize.height - headerHeight, width: drawerWidth, height: headerHeight))
+        header.autoresizingMask = [.width, .minYMargin]
+        header.wantsLayer = true
+        header.layer?.backgroundColor = CGColor(red: 0.12, green: 0.15, blue: 0.20, alpha: 1.0)
+        drawer.addSubview(header)
+
+        let titleLabel = NSTextField(labelWithString: "📄 Artifacts & Notes")
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+        titleLabel.textColor = NSColor(red: 0.90, green: 0.80, blue: 0.40, alpha: 1.0)
+        titleLabel.frame = NSRect(x: 12, y: 10, width: 170, height: 24)
+        header.addSubview(titleLabel)
+
+        let refreshBtn = NSButton(title: "🔄", target: self, action: #selector(refreshArtifacts))
+        refreshBtn.bezelStyle = .rounded
+        refreshBtn.toolTip = "Reload Notes & Artifacts"
+        refreshBtn.frame = NSRect(x: drawerWidth - 195, y: 9, width: 45, height: 26)
+        refreshBtn.autoresizingMask = [.minXMargin]
+        header.addSubview(refreshBtn)
+
+        let folderBtn = NSButton(title: "📂 Folder", target: self, action: #selector(openNotesFolder))
+        folderBtn.bezelStyle = .rounded
+        folderBtn.toolTip = "Open Notes Directory in Finder"
+        folderBtn.frame = NSRect(x: drawerWidth - 145, y: 9, width: 85, height: 26)
+        folderBtn.autoresizingMask = [.minXMargin]
+        header.addSubview(folderBtn)
+
+        let closeBtn = NSButton(title: "✖", target: self, action: #selector(toggleArtifactsDrawer))
+        closeBtn.bezelStyle = .rounded
+        closeBtn.toolTip = "Close Artifacts Drawer"
+        closeBtn.frame = NSRect(x: drawerWidth - 55, y: 9, width: 45, height: 26)
+        closeBtn.autoresizingMask = [.minXMargin]
+        header.addSubview(closeBtn)
+
+        let artConfig = WKWebViewConfiguration()
+        let artWeb = WKWebView(frame: NSRect(x: 0, y: 0, width: drawerWidth, height: windowSize.height - headerHeight), configuration: artConfig)
+        artWeb.autoresizingMask = [.width, .height]
+        artWeb.setValue(false, forKey: "drawsBackground")
+        drawer.addSubview(artWeb)
+        self.artifactsWebView = artWeb
+
+        container.addSubview(drawer)
+    }
+
+    @objc func toggleArtifactsDrawer() {
+        guard let drawer = artifactsDrawer, let container = window.contentView else { return }
+        isArtifactsDrawerOpen.toggle()
+
+        let drawerWidth: CGFloat = 440
+        let bounds = container.bounds
+
+        if isArtifactsDrawerOpen {
+            drawer.frame = NSRect(x: bounds.width - drawerWidth, y: 0, width: drawerWidth, height: bounds.height)
+            drawer.isHidden = false
+            webView.frame = NSRect(x: 0, y: 0, width: bounds.width - drawerWidth, height: bounds.height)
+            loadArtifactsContent()
+        } else {
+            drawer.isHidden = true
+            webView.frame = bounds
+        }
+    }
+
+    @objc func refreshArtifacts() {
+        loadArtifactsContent()
+    }
+
+    @objc func openNotesFolder() {
+        let path = NSString(string: "~/Documents/AU_Notes").expandingTildeInPath
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: path) {
+            try? fm.createDirectory(atPath: path, withIntermediateDirectories: true)
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    func loadArtifactsContent() {
+        let notesDir = NSString(string: "~/Documents/AU_Notes").expandingTildeInPath
+        let fm = FileManager.default
+        var notesListHTML = ""
+
+        if let files = try? fm.contentsOfDirectory(atPath: notesDir) {
+            let mdFiles = files.filter { $0.hasSuffix(".md") || $0.hasSuffix(".txt") }.sorted(by: >)
+            for f in mdFiles {
+                let fullPath = (notesDir as NSString).appendingPathComponent(f)
+                let content = (try? String(contentsOfFile: fullPath, encoding: .utf8)) ?? ""
+                let escapedContent = content
+                    .replacingOccurrences(of: "&", with: "&amp;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                    .replacingOccurrences(of: ">", with: "&gt;")
+
+                notesListHTML += """
+                <div class="note-card">
+                    <div class="note-header">
+                        <span class="note-title">📝 \(f)</span>
+                        <a class="open-link" href="file://\(fullPath)">Open</a>
+                    </div>
+                    <pre class="note-body">\(escapedContent)</pre>
+                </div>
+                """
+            }
+        }
+
+        if notesListHTML.isEmpty {
+            notesListHTML = """
+            <div class="empty-state">
+                <h3>No Artifacts Stored Yet</h3>
+                <p>AU writes markdown notes and system reports on command.</p>
+                <p>Try saying to AU:<br>
+                   <em>"Create a note titled Project Ideas with my goals"</em><br>
+                   <em>"Check my system status"</em>
+                </p>
+            </div>
+            """
+        }
+
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <style>
+            body {
+                background-color: #0d1117;
+                color: #c9d1d9;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                margin: 0;
+                padding: 16px;
+            }
+            h2 { color: #f0883e; margin-top: 0; font-size: 15px; border-bottom: 1px solid #21262d; padding-bottom: 8px; }
+            .note-card {
+                background: #161b22;
+                border: 1px solid #30363d;
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 12px;
+            }
+            .note-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+            }
+            .note-title { font-weight: 600; color: #58a6ff; font-size: 13px; }
+            .open-link {
+                color: #8b949e;
+                text-decoration: none;
+                font-size: 11px;
+                background: #21262d;
+                padding: 3px 8px;
+                border-radius: 4px;
+            }
+            .open-link:hover { color: #58a6ff; background: #30363d; }
+            .note-body {
+                font-size: 12px;
+                line-height: 1.5;
+                color: #c9d1d9;
+                white-space: pre-wrap;
+                max-height: 220px;
+                overflow-y: auto;
+                background: #0d1117;
+                padding: 8px;
+                border-radius: 4px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                margin: 0;
+            }
+            .empty-state {
+                text-align: center;
+                padding: 40px 20px;
+                color: #8b949e;
+            }
+            .empty-state h3 { color: #c9d1d9; }
+            .empty-state em { color: #58a6ff; }
+        </style>
+        </head>
+        <body>
+            <h2>📄 AU Artifacts & Notes Store</h2>
+            \(notesListHTML)
+        </body>
+        </html>
+        """
+        artifactsWebView?.loadHTMLString(html, baseURL: nil)
+    }
+
+    // MARK: - Persona Studio Engine
+    @objc func personaSelectionChanged(_ sender: NSSegmentedControl) {
+        let index = sender.selectedSegment
+        let personaKeys = ["automator", "researcher", "podcast", "coder"]
+        let personaKey = personaKeys[max(0, min(index, personaKeys.count - 1))]
+        savePersonaPreference(persona: personaKey)
+
+        let descriptions = [
+            "Persona: ⚡ Mac Automator (System actions, apps, volume, Spotify, macOS control)",
+            "Persona: 🧠 Research Partner (Grounded document RAG, citations, and summaries)",
+            "Persona: 🎙️ Podcast Studio (Dialogue synthesis & two-host audio generation)",
+            "Persona: 💻 Code Architect (Bash terminal execution, script editing, coding)"
+        ]
+        statusDetailLabel?.stringValue = descriptions[max(0, min(index, descriptions.count - 1))]
+    }
+
+    func savePersonaPreference(persona: String) {
+        let path = NSString(string: "~/.offline-ai/persona_config.json").expandingTildeInPath
+        let dict: [String: String] = [
+            "active_persona": persona,
+            "updated_at": ISO8601DateFormatter().string(from: Date())
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    func loadPersonaPreference() -> Int {
+        let path = NSString(string: "~/.offline-ai/persona_config.json").expandingTildeInPath
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let p = dict["active_persona"] as? String {
+            if p == "researcher" { return 1 }
+            if p == "podcast" { return 2 }
+            if p == "coder" { return 3 }
+        }
+        return 0 // default automator
+    }
+
+    // MARK: - Mem0 Memory Management Action
+    @objc func openMemoryManager() {
+        let scriptPath = NSString(string: "~/Downloads/offline ai/tools/au-memory").expandingTildeInPath
+        let terminalScript = """
+        osascript -e 'tell application "Terminal" to do script "\(scriptPath) list"'
+        """
+        let process = Process()
+        process.launchPath = "/bin/bash"
+        process.arguments = ["-c", terminalScript]
+        try? process.run()
+    }
+
     // MARK: - Voice Settings Dispatcher
     @objc func voiceSelectionChanged(_ sender: NSSegmentedControl) {
         var mode = "female"
@@ -196,6 +434,11 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         else if sender.selectedSegment == 2 { mode = "cloned" }
         saveVoicePreference(mode: mode)
         statusDetailLabel?.stringValue = "Assistant Voice changed to: \(sender.label(forSegment: sender.selectedSegment) ?? mode)"
+        // Personal Voice permission is an isolated, opt-in capability; never request it
+        // while AU is using its normal Male or Female system voices.
+        if mode == "cloned", #available(macOS 14.0, *) {
+            AVSpeechSynthesizer.requestPersonalVoiceAuthorization { _ in }
+        }
     }
 
     func saveVoicePreference(mode: String) {
@@ -265,6 +508,10 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     func stopVoiceAssistant() {
         if let process = assistantProcess, process.isRunning {
             process.terminate()
+            // Give the Python signal handler a moment to stop its recorder/speaker child.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+                if process.isRunning { process.interrupt() }
+            }
         }
         assistantProcess = nil
         isAssistantActive = false
@@ -417,9 +664,12 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         return [
             NSToolbarItem.Identifier("VoiceAssistantItem"),
+            NSToolbarItem.Identifier("PersonaItem"),
+            NSToolbarItem.Identifier("ArtifactsItem"),
+            NSToolbarItem.Identifier("MemoryItem"),
+            .flexibleSpace,
             NSToolbarItem.Identifier("CloneVoiceItem"),
             NSToolbarItem.Identifier("PodcastItem"),
-            .flexibleSpace,
             NSToolbarItem.Identifier("OpenPodcastsItem"),
             NSToolbarItem.Identifier("StatusItem")
         ]
@@ -441,6 +691,41 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
             btn.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Mic")
             btn.imagePosition = .imageLeading
             voiceToolbarButton = btn
+            item.view = btn
+            return item
+        } else if itemIdentifier.rawValue == "PersonaItem" {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "AI Persona"
+            item.paletteLabel = "AI Persona"
+            item.toolTip = "Switch AI persona between Automator, Researcher, Podcast Studio, and Code Architect"
+
+            let selector = NSSegmentedControl(labels: ["⚡ Auto", "🧠 Research", "🎙️ Podcast", "💻 Code"], trackingMode: .selectOne, target: self, action: #selector(personaSelectionChanged(_:)))
+            selector.selectedSegment = loadPersonaPreference()
+            self.personaSegmentedControl = selector
+            item.view = selector
+            return item
+        } else if itemIdentifier.rawValue == "ArtifactsItem" {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Artifacts"
+            item.paletteLabel = "Artifacts & Notes"
+            item.toolTip = "Toggle slide-over drawer for notes, artifacts, and generated documents"
+
+            let btn = NSButton(title: " Artifacts", target: self, action: #selector(toggleArtifactsDrawer))
+            btn.bezelStyle = .rounded
+            btn.image = NSImage(systemSymbolName: "doc.text.magnifyingglass", accessibilityDescription: "Artifacts")
+            btn.imagePosition = .imageLeading
+            item.view = btn
+            return item
+        } else if itemIdentifier.rawValue == "MemoryItem" {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Mem0 Memory"
+            item.paletteLabel = "Mem0 Memory Store"
+            item.toolTip = "View and manage remembered personal preferences and episodic facts"
+
+            let btn = NSButton(title: " Memory", target: self, action: #selector(openMemoryManager))
+            btn.bezelStyle = .rounded
+            btn.image = NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "Memory")
+            btn.imagePosition = .imageLeading
             item.view = btn
             return item
         } else if itemIdentifier.rawValue == "CloneVoiceItem" {
@@ -635,6 +920,9 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         let assistantMenu = NSMenu(title: "Assistant")
         assistantMenuItem.submenu = assistantMenu
         assistantMenu.addItem(withTitle: "Toggle Voice Assistant", action: #selector(toggleVoiceAssistant), keyEquivalent: "A")
+        assistantMenu.addItem(withTitle: "Toggle Artifacts & Notes Drawer", action: #selector(toggleArtifactsDrawer), keyEquivalent: "D")
+        assistantMenu.addItem(withTitle: "Manage Personal Memory (Mem0)...", action: #selector(openMemoryManager), keyEquivalent: "M")
+        assistantMenu.addItem(NSMenuItem.separator())
         assistantMenu.addItem(withTitle: "Make Audio Podcast", action: #selector(generatePodcast), keyEquivalent: "P")
         assistantMenu.addItem(withTitle: "Open Saved Podcasts", action: #selector(openPodcastsFolder), keyEquivalent: "O")
         assistantMenu.addItem(NSMenuItem.separator())
@@ -716,15 +1004,34 @@ func speakWithPersonalVoice(text: String) {
     let voices = AVSpeechSynthesisVoice.speechVoices()
     var selectedVoice: AVSpeechSynthesisVoice? = nil
 
-    // 1. Look for AI female or Personal Voice
-    for v in voices {
-        if isVoiceClonedOrPersonal(v) {
-            selectedVoice = v
-            break
+    let configPath = NSString(string: "~/.offline-ai/voice_config.json").expandingTildeInPath
+    let mode: String
+    if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+       let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let savedMode = config["voice_gender"] as? String {
+        mode = savedMode
+    } else {
+        mode = "female"
+    }
+
+    // Personal Voice is exclusively opt-in via the Cloned Voice segment.
+    if mode == "male" {
+        selectedVoice = voices.first(where: { $0.name == "Daniel" })
+    } else if mode == "female" {
+        selectedVoice = voices.first(where: { $0.name == "Samantha" })
+    }
+
+    // Look for a Personal Voice only when the user selected Cloned Voice.
+    if mode == "cloned" {
+        for v in voices {
+            if isVoiceClonedOrPersonal(v) {
+                selectedVoice = v
+                break
+            }
         }
     }
 
-    let isPersonal = isVoiceClonedOrPersonal(selectedVoice)
+    let isPersonal = mode == "cloned" && isVoiceClonedOrPersonal(selectedVoice)
     if isPersonal {
         fputs("🗣️ [AU Voice: \(selectedVoice?.name ?? "AI female") ⭐ (YOUR CLONED PERSONAL VOICE)]\n", stderr)
     } else {

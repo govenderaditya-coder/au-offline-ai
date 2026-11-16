@@ -23,35 +23,29 @@ let synthesizer = AVSpeechSynthesizer()
 let delegate = SpeakerDelegate()
 synthesizer.delegate = delegate
 
-func findBestVoice() -> AVSpeechSynthesisVoice? {
-    let voices = AVSpeechSynthesisVoice.speechVoices()
-    
-    // 1. Check for AI female or Personal Voice
-    for v in voices {
-        let nameLower = v.name.lowercased()
-        if nameLower.contains("ai female") || nameLower == "ai female" || v.voiceTraits.contains(.isPersonalVoice) {
-            return v
-        }
-    }
-    
-    // 2. Check for any voice named female or aditya
-    for v in voices {
-        let nameLower = v.name.lowercased()
-        if nameLower.contains("female") || nameLower.contains("aditya") {
-            return v
-        }
-    }
-    
-    // 3. Fallback to Samantha
-    if let samantha = voices.first(where: { $0.name == "Samantha" }) {
-        return samantha
-    }
-    
-    return AVSpeechSynthesisVoice(language: "en-US")
+func configuredVoiceMode() -> String {
+    let configPath = NSString(string: "~/.offline-ai/voice_config.json").expandingTildeInPath
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+          let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let mode = config["voice_gender"] as? String else { return "female" }
+    return mode
 }
 
-let voice = findBestVoice()
-let isPersonal = voice?.voiceTraits.contains(.isPersonalVoice) ?? false || (voice?.name.lowercased().contains("ai female") ?? false)
+func findBestVoice(for mode: String) -> AVSpeechSynthesisVoice? {
+    let voices = AVSpeechSynthesisVoice.speechVoices()
+    if mode == "male" { return voices.first(where: { $0.name == "Daniel" }) ?? AVSpeechSynthesisVoice(language: "en-US") }
+    if mode == "cloned" {
+        return voices.first(where: { $0.voiceTraits.contains(.isPersonalVoice) || $0.name.lowercased().contains("ai female") })
+            ?? voices.first(where: { $0.name == "Samantha" })
+    }
+    // Female means a normal system voice. A Personal Voice is opt-in only via Cloned.
+    return voices.first(where: { $0.name == "Samantha" })
+        ?? voices.first(where: { $0.language == "en-US" && !$0.voiceTraits.contains(.isPersonalVoice) })
+}
+
+let voiceMode = configuredVoiceMode()
+let voice = findBestVoice(for: voiceMode)
+let isPersonal = voiceMode == "cloned" && (voice?.voiceTraits.contains(.isPersonalVoice) ?? false || (voice?.name.lowercased().contains("ai female") ?? false))
 
 fputs("🗣️ [AU Voice: \(voice?.name ?? "Default")\(isPersonal ? " ⭐ (YOUR CLONED VOICE)" : "")]\n", stderr)
 

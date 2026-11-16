@@ -65,7 +65,7 @@ if os.path.exists(SAMPLE_WAV) and os.path.getsize(SAMPLE_WAV) > 1000:
                 pass
 
 # Fallback to AU app bundle / system voice
-au_app = "/Applications/AU.app/Contents/MacOS/AU"
+au_app = os.path.join(PROJECT_DIR, "AU.app", "Contents", "MacOS", "AU")
 if os.path.exists(au_app):
     subprocess.run([au_app, "--speak", text_to_speak])
 else:
