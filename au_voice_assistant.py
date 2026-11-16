@@ -59,7 +59,20 @@ def get_active_model_and_persona() -> tuple[str, str, str]:
                 elif persona == "podcast":
                     return "au-notebooklm:latest", "podcast", "You are AU in Podcast Studio mode. Formulate spoken responses with natural conversational audio cadence."
                 elif persona == "coder":
-                    return "au-assistant:latest", "coder", "You are AU in Code Architect mode. Prioritize terminal execution, bash tools, script editing, and technical precision."
+                    repo_map = ""
+                    try:
+                        from au_repo_map import get_compact_repo_map
+                        repo_map = "\n" + get_compact_repo_map(".")
+                    except Exception:
+                        pass
+                    desc = (
+                        "You are AU in Code Architect mode. You specialize in terminal execution, bash tools, script editing, and precision diffs.\n"
+                        "When editing code files, prefer: [ACTION: edit_file_patch(\"path\", \"search_block\", \"replace_block\")].\n"
+                        "To verify syntax: [ACTION: verify_syntax(\"path\")].\n"
+                        "To commit changes: [ACTION: git_auto_commit(\"message\")].\n"
+                        + repo_map
+                    )
+                    return "au-assistant:latest", "coder", desc
                 else:
                     return "au-assistant:latest", "automator", "You are AU in Mac Automator mode. Prioritize system actions: volume, Spotify, apps, screenshots, and Mac controls."
         except Exception:
@@ -223,7 +236,11 @@ def process_command(command: str):
         "- [ACTION: create_note(\"Title\", \"Content\")]\n"
         "- [ACTION: open_folder(\"path\")]\n"
         "- [ACTION: read_file(\"path\")]\n"
+        "- [ACTION: write_file(\"path\", \"content\")]\n"
+        "- [ACTION: edit_file_patch(\"path\", \"search_block\", \"replace_block\")]\n"
+        "- [ACTION: verify_syntax(\"path\")]\n"
         "- [ACTION: parse_document(\"path\")]\n"
+        "- [ACTION: git_auto_commit(\"message\")]\n"
         "- [ACTION: execute_bash(\"command\")]\n"
         "\nGUIDELINES:\n"
         "1. Emit action tags first when an action or information retrieval is required.\n"

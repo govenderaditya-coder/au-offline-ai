@@ -198,6 +198,27 @@ In `AU.app`, toggle between `👩 Female (Samantha)`, `👨 Male (Daniel)`, and 
 
 ---
 
+## 💻 AU Terminal CLI & Autonomous Code Architect
+
+AU includes a native Unix pipeline CLI (`tools/au`) inspired by Gemini-CLI and Aider:
+
+```bash
+# Pipe any file or command output directly into AU
+cat file.py | ./tools/au "explain what this code does"
+git diff | ./tools/au "generate a conventional git commit message"
+
+# Autonomous coding mode with compact AST Repo Map (<1000 tokens)
+./tools/au --code "add boundary check to au_tools.py"
+
+# Auto-commit modified files when task succeeds
+./tools/au --code --commit "fixed edge case in file editor"
+
+# Voice response flag
+./tools/au --voice "what is my battery level?"
+```
+
+---
+
 ## 📄 License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

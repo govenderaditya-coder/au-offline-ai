@@ -1,0 +1,7 @@
+#!/bin/bash
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="/Users/aditya/.local/share/uv/tools/open-webui/bin/python"
+if [ ! -f "$PYTHON" ]; then
+    PYTHON="python3"
+fi
+exec "$PYTHON" "$DIR/src/app/au_cli.py" "$@"

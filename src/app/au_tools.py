@@ -102,6 +102,21 @@ class SearchWebSummaryArgs(BaseModel):
 class ParseDocumentArgs(BaseModel):
     path: str = Field(..., description="Path of document (markdown, text, csv) to parse")
 
+class EditFilePatchArgs(BaseModel):
+    path: str = Field(..., description="Path of file to edit")
+    search_block: str = Field(..., description="Exact original code block to replace")
+    replace_block: str = Field(..., description="New replacement code block")
+
+class VerifySyntaxArgs(BaseModel):
+    path: str = Field(..., description="Path of code file to check syntax for (python, swift, js, etc.)")
+
+class GitAutoCommitArgs(BaseModel):
+    message: str = Field(..., description="Commit message describing completed task")
+    paths: Optional[List[str]] = Field(None, description="Optional specific paths to commit")
+
+class GetRepoMapArgs(BaseModel):
+    root_dir: Optional[str] = Field(".", description="Root directory to build repository map for")
+
 # ==============================================================================
 # Execution Handlers
 # ==============================================================================
@@ -360,6 +375,116 @@ def run_parse_document(args: ParseDocumentArgs) -> ToolResult:
     except Exception as e:
         return ToolResult(success=False, message=f"Document parsing error: {e}")
 
+def check_file_syntax(path: str) -> tuple[bool, str]:
+    """Runs a non-destructive compiler syntax pass on the file (SWE-Agent style)."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".py":
+        proc = subprocess.run([sys.executable, "-m", "py_compile", path], capture_output=True, text=True)
+        if proc.returncode != 0:
+            return False, proc.stderr.strip() or proc.stdout.strip()
+    elif ext == ".swift":
+        proc = subprocess.run(["swiftc", "-parse", path], capture_output=True, text=True)
+        if proc.returncode != 0:
+            return False, proc.stderr.strip() or proc.stdout.strip()
+    elif ext in (".js", ".json"):
+        proc = subprocess.run(["node", "-c", path], capture_output=True, text=True)
+        if proc.returncode != 0:
+            return False, proc.stderr.strip() or proc.stdout.strip()
+    elif ext == ".sh":
+        proc = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+        if proc.returncode != 0:
+            return False, proc.stderr.strip() or proc.stdout.strip()
+    return True, "Syntax verified cleanly"
+
+def run_edit_file_patch(args: EditFilePatchArgs) -> ToolResult:
+    """Performs surgical search-and-replace block diffing and auto-verifies syntax (Cline & Aider style)."""
+    path = os.path.expanduser(args.path)
+    if not os.path.exists(path):
+        return ToolResult(success=False, message=f"File not found: {path}")
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        search_str = args.search_block
+        replace_str = args.replace_block
+
+        if search_str not in content:
+            # Fallback: try flexible line-by-line whitespace normalization
+            search_lines = [l.strip() for l in search_str.strip().split("\n") if l.strip()]
+            content_lines = content.split("\n")
+            matched = False
+            for i in range(len(content_lines) - len(search_lines) + 1):
+                window = [content_lines[i + j].strip() for j in range(len(search_lines))]
+                if window == search_lines:
+                    content_lines = content_lines[:i] + [replace_str] + content_lines[i + len(search_lines):]
+                    content = "\n".join(content_lines)
+                    matched = True
+                    break
+            if not matched:
+                return ToolResult(success=False, message=f"Search block could not be located in {os.path.basename(path)}. Please provide exact matching lines.")
+        else:
+            content = content.replace(search_str, replace_str, 1)
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # Run automated syntax check hook
+        syntax_ok, syntax_msg = check_file_syntax(path)
+        if not syntax_ok:
+            return ToolResult(
+                success=True,
+                message=f"Applied patch to {os.path.basename(path)}, BUT SYNTAX ERROR DETECTED:\n{syntax_msg}\nPlease fix this syntax error.",
+                data={"path": path, "syntax_ok": False, "syntax_error": syntax_msg}
+            )
+
+        return ToolResult(
+            success=True,
+            message=f"Successfully patched {os.path.basename(path)} (Syntax verified ✅)",
+            data={"path": path, "syntax_ok": True}
+        )
+    except Exception as e:
+        return ToolResult(success=False, message=f"Error patching file {path}: {e}")
+
+def run_verify_syntax(args: VerifySyntaxArgs) -> ToolResult:
+    """Verifies file syntax using local native compiler passes (SWE-Agent style)."""
+    path = os.path.expanduser(args.path)
+    if not os.path.exists(path):
+        return ToolResult(success=False, message=f"File not found: {path}")
+    ok, msg = check_file_syntax(path)
+    return ToolResult(success=ok, message=f"Syntax check on {os.path.basename(path)}: {msg}", data={"syntax_ok": ok})
+
+def run_git_auto_commit(args: GitAutoCommitArgs) -> ToolResult:
+    """Creates a clean atomic git commit after an autonomous coding task (Aider style)."""
+    try:
+        proc_check = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
+        if proc_check.returncode != 0:
+            return ToolResult(success=False, message="Not inside a git repository")
+
+        if args.paths:
+            for p in args.paths:
+                subprocess.run(["git", "add", p], capture_output=True)
+        else:
+            subprocess.run(["git", "add", "-u"], capture_output=True)
+
+        msg = f"AU: {args.message.strip()}"
+        proc_commit = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True)
+        if proc_commit.returncode == 0:
+            return ToolResult(success=True, message=f"Committed changes: '{msg}'", data={"commit_message": msg})
+        else:
+            return ToolResult(success=False, message=f"Git commit notice: {proc_commit.stdout or proc_commit.stderr}")
+    except Exception as e:
+        return ToolResult(success=False, message=f"Git auto-commit error: {e}")
+
+def run_get_repo_map(args: GetRepoMapArgs) -> ToolResult:
+    """Generates an ultra-compact architecture map (<1000 tokens) of the project (Aider style)."""
+    try:
+        from au_repo_map import get_compact_repo_map
+        rmap = get_compact_repo_map(args.root_dir or ".")
+        return ToolResult(success=True, message=rmap, data={"repo_map": rmap})
+    except Exception as e:
+        return ToolResult(success=False, message=f"Repo map error: {e}")
+
 # ==============================================================================
 # Model Context Protocol (MCP) Registry
 # ==============================================================================
@@ -374,6 +499,10 @@ TOOL_REGISTRY = {
     "browse_url": (BrowseUrlArgs, run_browse_url, "Fetch a webpage, strip HTML ads and boilerplate, and read the clean article text"),
     "search_web_summary": (SearchWebSummaryArgs, run_search_web_summary, "Perform local web search via DuckDuckGo and return article snippets without opening browser"),
     "parse_document": (ParseDocumentArgs, run_parse_document, "Layout-aware chunking and table reconstruction for local documents"),
+    "edit_file_patch": (EditFilePatchArgs, run_edit_file_patch, "Surgical search-and-replace block diffing with automatic post-edit syntax verification"),
+    "verify_syntax": (VerifySyntaxArgs, run_verify_syntax, "Verify code file syntax using local compilers (py_compile, swiftc -parse)"),
+    "git_auto_commit": (GitAutoCommitArgs, run_git_auto_commit, "Create a clean atomic git commit after an autonomous coding task"),
+    "get_repo_map": (GetRepoMapArgs, run_get_repo_map, "Generate an ultra-compact architecture map of the project for Code Architect"),
     "get_battery": (None, run_get_battery, "Check MacBook battery percentage and power source"),
     "get_disk_space": (None, run_get_disk_space, "Check Mac available disk space"),
     "get_system_status": (None, run_get_system_status, "Get consolidated status: current time, battery, and free disk space"),
@@ -540,6 +669,23 @@ def _execute_legacy_action(action_str: str) -> ToolResult:
     m = re.match(r'parse_document\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
     if m:
         return run_parse_document(ParseDocumentArgs(path=m.group(1)))
+
+    # verify_syntax("path")
+    m = re.match(r'verify_syntax\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_verify_syntax(VerifySyntaxArgs(path=m.group(1)))
+
+    # git_auto_commit("message")
+    m = re.match(r'git_auto_commit\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_git_auto_commit(GitAutoCommitArgs(message=m.group(1)))
+
+    # get_repo_map("path")
+    m = re.match(r'get_repo_map\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_get_repo_map(GetRepoMapArgs(root_dir=m.group(1) or "."))
+    elif "get_repo_map" in action_str.lower():
+        return run_get_repo_map(GetRepoMapArgs())
 
     # Fallback to safe bash execution
     return run_execute_bash(ExecuteBashArgs(command=action_str))

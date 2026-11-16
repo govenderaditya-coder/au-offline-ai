@@ -750,6 +750,37 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         }
     }
 
+    // MARK: - Codebase Architecture Map (Aider-style)
+    @objc func showRepoMap() {
+        let scriptPath = NSString(string: "~/Downloads/offline ai/src/app/au_repo_map.py").expandingTildeInPath
+        let pythonPath = "/Users/aditya/.local/share/uv/tools/open-webui/bin/python"
+        let projectPath = NSString(string: "~/Downloads/offline ai").expandingTildeInPath
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pythonPath)
+        proc.arguments = [scriptPath, projectPath]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        try? proc.run()
+        proc.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let mapText = String(data: data, encoding: .utf8) ?? "Unable to generate project map."
+
+        let alert = NSAlert()
+        alert.messageText = "AU Project Architecture Map"
+        alert.informativeText = mapText
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Copy to Clipboard")
+        alert.addButton(withTitle: "Done")
+        alert.beginSheetModal(for: self.window) { resp in
+            if resp == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(mapText, forType: .string)
+            }
+        }
+    }
+
     // MARK: - NSToolbarDelegate
     func setupToolbar() {
         let toolbar = NSToolbar(identifier: "AUToolbar")
@@ -1030,6 +1061,7 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         assistantMenu.addItem(NSMenuItem.separator())
         assistantMenu.addItem(withTitle: "Inspect Image with Local Vision...", action: #selector(inspectImageWithVision), keyEquivalent: "I")
         assistantMenu.addItem(withTitle: "Export Chat to Markdown...", action: #selector(exportChatToMarkdown), keyEquivalent: "E")
+        assistantMenu.addItem(withTitle: "View Project Architecture Map...", action: #selector(showRepoMap), keyEquivalent: "R")
 
         // Edit Menu
         let editMenuItem = NSMenuItem()
