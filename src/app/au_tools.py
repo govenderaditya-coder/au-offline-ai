@@ -12,6 +12,8 @@ import json
 import time
 import shutil
 import subprocess
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Literal, Union
 from pydantic import BaseModel, Field, ValidationError
@@ -89,6 +91,16 @@ class WriteFileArgs(BaseModel):
     path: str = Field(..., description="Path of file to write")
     content: str = Field(..., description="Content to write into the file")
     append: Optional[bool] = Field(False, description="Whether to append instead of overwrite")
+
+class BrowseUrlArgs(BaseModel):
+    url: str = Field(..., description="Web URL to fetch and extract readable article text from")
+    max_chars: Optional[int] = Field(1800, ge=200, le=5000, description="Max characters to return")
+
+class SearchWebSummaryArgs(BaseModel):
+    query: str = Field(..., min_length=2, description="Search query to retrieve web summary snippets for")
+
+class ParseDocumentArgs(BaseModel):
+    path: str = Field(..., description="Path of document (markdown, text, csv) to parse")
 
 # ==============================================================================
 # Execution Handlers
@@ -273,6 +285,81 @@ def run_write_file(args: WriteFileArgs) -> ToolResult:
     except Exception as e:
         return ToolResult(success=False, message=f"Failed writing file: {e}")
 
+def run_browse_url(args: BrowseUrlArgs) -> ToolResult:
+    """Fetches a webpage, strips HTML boilerplate, and extracts clean readable article text."""
+    url = args.url.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "https://" + url
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            raw_data = resp.read().decode("utf-8", errors="replace")
+
+        # Strip scripts, styles, navigations, footers
+        raw_data = re.sub(r'<(script|style|nav|footer|header|noscript)[^>]*>.*?</\1>', '', raw_data, flags=re.DOTALL | re.IGNORECASE)
+        m_title = re.search(r'<title>(.*?)</title>', raw_data, re.IGNORECASE)
+        title = m_title.group(1).strip() if m_title else "Webpage"
+
+        clean_text = re.sub(r'<[^>]+>', ' ', raw_data)
+        clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+
+        max_len = args.max_chars or 1800
+        truncated = clean_text[:max_len]
+        if len(clean_text) > max_len:
+            truncated += "..."
+
+        msg = f"Title: {title}\nContent: {truncated}"
+        return ToolResult(success=True, message=msg, data={"title": title, "url": url, "text": truncated})
+    except Exception as e:
+        return ToolResult(success=False, message=f"Failed to browse {url}: {e}")
+
+def run_search_web_summary(args: SearchWebSummaryArgs) -> ToolResult:
+    """Performs an offline-friendly web search via DuckDuckGo and returns article snippets."""
+    query = args.query.strip()
+    encoded = urllib.parse.quote_plus(query)
+    url = f"https://html.duckduckgo.com/html/?q={encoded}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+
+        snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', html, flags=re.DOTALL | re.IGNORECASE)
+        results = []
+        for i in range(min(4, len(snippets))):
+            s = re.sub(r'<[^>]+>', '', snippets[i]).strip()
+            if s:
+                results.append(f"• {s}")
+
+        if not results:
+            subprocess.run(["open", f"https://www.google.com/search?q={encoded}"], capture_output=True)
+            return ToolResult(success=True, message=f"Opened search for '{query}' in browser", data={"query": query})
+
+        summary = f"Search Results for '{query}':\n" + "\n".join(results)
+        return ToolResult(success=True, message=summary, data={"query": query, "results": results})
+    except Exception as e:
+        subprocess.run(["open", f"https://www.google.com/search?q={encoded}"], capture_output=True)
+        return ToolResult(success=True, message=f"Opened search for '{query}' in browser: {e}", data={"query": query})
+
+def run_parse_document(args: ParseDocumentArgs) -> ToolResult:
+    """Layout-aware chunking and table reconstruction for local documents."""
+    try:
+        from au_document_parser import AUDocumentParser
+        chunks = AUDocumentParser.parse_file(args.path)
+        tables = [c for c in chunks if c.chunk_type == "table"]
+        codes = [c for c in chunks if c.chunk_type == "code"]
+        msg = f"Parsed {os.path.basename(args.path)}: {len(chunks)} chunks, {len(tables)} tables, {len(codes)} code blocks."
+        return ToolResult(success=True, message=msg, data={"total_chunks": len(chunks), "tables": len(tables)})
+    except Exception as e:
+        return ToolResult(success=False, message=f"Document parsing error: {e}")
+
 # ==============================================================================
 # Model Context Protocol (MCP) Registry
 # ==============================================================================
@@ -284,6 +371,9 @@ TOOL_REGISTRY = {
     "media_control": (MediaControlArgs, run_media_control, "Control playback (play, pause, next, prev) on Spotify or Music"),
     "search_web": (SearchWebArgs, run_search_web, "Search Google in the default browser"),
     "open_url": (OpenUrlArgs, run_open_url, "Open a web URL in the browser"),
+    "browse_url": (BrowseUrlArgs, run_browse_url, "Fetch a webpage, strip HTML ads and boilerplate, and read the clean article text"),
+    "search_web_summary": (SearchWebSummaryArgs, run_search_web_summary, "Perform local web search via DuckDuckGo and return article snippets without opening browser"),
+    "parse_document": (ParseDocumentArgs, run_parse_document, "Layout-aware chunking and table reconstruction for local documents"),
     "get_battery": (None, run_get_battery, "Check MacBook battery percentage and power source"),
     "get_disk_space": (None, run_get_disk_space, "Check Mac available disk space"),
     "get_system_status": (None, run_get_system_status, "Get consolidated status: current time, battery, and free disk space"),
@@ -435,6 +525,21 @@ def _execute_legacy_action(action_str: str) -> ToolResult:
     m = re.match(r'open_folder\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
     if m:
         return run_open_path(OpenPathArgs(path=m.group(1)))
+
+    # browse_url("https://...")
+    m = re.match(r'browse_url\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_browse_url(BrowseUrlArgs(url=m.group(1)))
+
+    # search_web_summary("query")
+    m = re.match(r'search_web_summary\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_search_web_summary(SearchWebSummaryArgs(query=m.group(1)))
+
+    # parse_document("path")
+    m = re.match(r'parse_document\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_parse_document(ParseDocumentArgs(path=m.group(1)))
 
     # Fallback to safe bash execution
     return run_execute_bash(ExecuteBashArgs(command=action_str))

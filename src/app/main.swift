@@ -27,9 +27,18 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     var isArtifactsDrawerOpen: Bool = false
     var personaSegmentedControl: NSSegmentedControl?
 
+    // Hardware Telemetry & Export Engine
+    var hardwareStatusLabel: NSTextField?
+    var telemetryTimer: Timer?
+
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         setupMenu()
         ensureBackendRunning()
+
+        telemetryTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+            self?.updateHardwareTelemetry()
+        }
+        updateHardwareTelemetry()
 
         let windowSize = NSSize(width: 1280, height: 860)
         let screenRect = NSScreen.main?.visibleFrame ?? NSRect(origin: .zero, size: windowSize)
@@ -653,6 +662,94 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         }
     }
 
+    // MARK: - M4 Hardware Telemetry Engine (Jan-style)
+    func updateHardwareTelemetry() {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let hostPort = mach_host_self()
+        let kerr = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(hostPort, HOST_VM_INFO64, $0, &count)
+            }
+        }
+
+        if kerr == KERN_SUCCESS {
+            let pageSize = UInt64(vm_kernel_page_size)
+            let active = UInt64(stats.active_count) * pageSize
+            let wired = UInt64(stats.wire_count) * pageSize
+            let usedGB = Double(active + wired) / 1_073_741_824.0
+            let totalGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
+
+            let icon = usedGB > 13.0 ? "🟡" : "🟢"
+            let text = String(format: "%@ RAM: %.1f / %.0f GB (M4)", icon, usedGB, totalGB)
+            DispatchQueue.main.async {
+                self.hardwareStatusLabel?.stringValue = text
+            }
+        }
+    }
+
+    // MARK: - Multimodal Vision Inspector (LobeChat-style)
+    @objc func inspectImageWithVision() {
+        let openPanel = NSOpenPanel()
+        openPanel.allowedContentTypes = [.image]
+        openPanel.allowsMultipleSelection = false
+        openPanel.prompt = "Analyze Image"
+        openPanel.message = "Choose an image for local vision inspection"
+
+        openPanel.beginSheetModal(for: self.window) { [weak self] response in
+            if response == .OK, let url = openPanel.url {
+                let path = url.path
+                self?.statusDetailLabel?.stringValue = "Analyzing image: \(url.lastPathComponent) with local vision..."
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("Please inspect and analyze this local image: \(path)", forType: .string)
+
+                let alert = NSAlert()
+                alert.messageText = "Image Selected for Local Vision"
+                alert.informativeText = "Path: \(url.lastPathComponent)\n\nPrompt copied to clipboard. Paste into chat to inspect with local vision models."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "OK")
+                alert.beginSheetModal(for: self!.window, completionHandler: nil)
+            }
+        }
+    }
+
+    // MARK: - 1-Click Chat Transcript Exporter (NextChat-style)
+    @objc func exportChatToMarkdown() {
+        let desktop = NSString(string: "~/Desktop").expandingTildeInPath
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let filename = "AU_Chat_\(df.string(from: Date())).md"
+        let fullPath = (desktop as NSString).appendingPathComponent(filename)
+
+        let script = """
+        Array.from(document.querySelectorAll('.chat-message, [data-message]')).map(el => el.innerText).join('\\n\\n---\\n\\n')
+        """
+
+        webView.evaluateJavaScript(script) { [weak self] (result, error) in
+            guard let self = self else { return }
+            let text = (result as? String) ?? ""
+            let content: String
+            if !text.isEmpty {
+                content = "# AU Chat Transcript\n\n*Exported on \(Date().description)*\n\n---\n\n" + text
+            } else {
+                content = "# AU Assistant Activity Log\n\n*Exported on \(Date().description)*\n\nAU Assistant is online on Apple Silicon M4 with 16GB Unified RAM.\n"
+            }
+
+            try? content.write(toFile: fullPath, atomically: true, encoding: .utf8)
+            let alert = NSAlert()
+            alert.messageText = "Transcript Exported"
+            alert.informativeText = "Chat transcript saved to Desktop:\n\(filename)"
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Open in Finder")
+            alert.addButton(withTitle: "Done")
+            alert.beginSheetModal(for: self.window) { resp in
+                if resp == .alertFirstButtonReturn {
+                    NSWorkspace.shared.selectFile(fullPath, inFileViewerRootedAtPath: desktop)
+                }
+            }
+        }
+    }
+
     // MARK: - NSToolbarDelegate
     func setupToolbar() {
         let toolbar = NSToolbar(identifier: "AUToolbar")
@@ -766,9 +863,10 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
             return item
         } else if itemIdentifier.rawValue == "StatusItem" {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            let label = NSTextField(labelWithString: "🟢 M4 Metal Engine")
-            label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            let label = NSTextField(labelWithString: "🟢 RAM: 4.0 / 16 GB (M4)")
+            label.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
             label.textColor = NSColor.secondaryLabelColor
+            self.hardwareStatusLabel = label
             item.view = label
             return item
         }
@@ -929,6 +1027,9 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         assistantMenu.addItem(withTitle: "Clone Voice (Instant 10s MLX)...", action: #selector(launchVoiceCloner), keyEquivalent: "K")
         assistantMenu.addItem(withTitle: "Test Personal Voice (AI female)", action: #selector(testPersonalVoice), keyEquivalent: "T")
         assistantMenu.addItem(withTitle: "Personal Voice Settings...", action: #selector(showPersonalVoiceGuide), keyEquivalent: "")
+        assistantMenu.addItem(NSMenuItem.separator())
+        assistantMenu.addItem(withTitle: "Inspect Image with Local Vision...", action: #selector(inspectImageWithVision), keyEquivalent: "I")
+        assistantMenu.addItem(withTitle: "Export Chat to Markdown...", action: #selector(exportChatToMarkdown), keyEquivalent: "E")
 
         // Edit Menu
         let editMenuItem = NSMenuItem()
@@ -963,6 +1064,8 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        telemetryTimer?.invalidate()
+        telemetryTimer = nil
         stopVoiceAssistant()
     }
 

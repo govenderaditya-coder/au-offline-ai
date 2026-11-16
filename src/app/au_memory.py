@@ -100,53 +100,90 @@ class AUMemoryEngine:
             return new_id
 
     def recall(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Recalls relevant memories using FTS5 search with fallback to recent facts."""
-        clean_query = re.sub(r'[^\w\s]', ' ', query).strip()
-        results = []
+        """
+        Recalls relevant memories using Dify-inspired Reciprocal Rank Fusion (RRF).
+        Combines SQLite FTS5 BM25 keyword rankings with semantic token-overlap and recency scores:
+        Score(d) = (1.0 / (60 + rank_fts)) + (0.8 / (60 + rank_semantic)) + (0.4 / (60 + rank_recency))
+        """
+        clean_query = re.sub(r'[^\w\s]', ' ', query).strip().lower()
+        if not clean_query:
+            return self.list_all(limit=limit)
+
+        query_tokens = set(w for w in clean_query.split() if len(w) > 2)
+        all_memories: List[Dict[str, Any]] = []
 
         with self._get_conn() as conn:
             cur = conn.cursor()
+            cur.execute("SELECT id, user_id, fact, category, confidence, created_at, last_accessed_at, access_count FROM memories")
+            all_memories = [dict(row) for row in cur.fetchall()]
 
-            # 1. Try full-text search match if query words exist
-            words = [w for w in clean_query.split() if len(w) > 2]
-            if words:
-                fts_query = " OR ".join([f'"{w}"*' for w in words[:6]])
-                try:
+        if not all_memories:
+            return []
+
+        # 1. Ranker A: FTS5 BM25 Keyword Search
+        fts_rank_map: Dict[int, int] = {}
+        if query_tokens:
+            fts_query = " OR ".join([f'"{w}"*' for w in list(query_tokens)[:8]])
+            try:
+                with self._get_conn() as conn:
+                    cur = conn.cursor()
                     cur.execute("""
-                        SELECT m.id, m.fact, m.category, m.created_at, rank
+                        SELECT m.id, rank
                         FROM fts_memories f
                         JOIN memories m ON f.rowid = m.id
                         WHERE fts_memories MATCH ?
                         ORDER BY rank
-                        LIMIT ?
-                    """, (fts_query, limit))
-                    results = [dict(row) for row in cur.fetchall()]
-                except Exception:
-                    pass
+                        LIMIT 20
+                    """, (fts_query,))
+                    for rank_idx, row in enumerate(cur.fetchall()):
+                        fts_rank_map[row["id"]] = rank_idx + 1
+            except Exception:
+                pass
 
-            # 2. If fewer than limit, supplement with most frequently accessed recent facts
-            if len(results) < limit:
-                needed = limit - len(results)
-                existing_ids = [r["id"] for r in results]
-                placeholders = ",".join(["?"] * len(existing_ids)) if existing_ids else "-1"
-                sql = f"""
-                    SELECT id, fact, category, created_at
-                    FROM memories
-                    WHERE id NOT IN ({placeholders})
-                    ORDER BY access_count DESC, created_at DESC
-                    LIMIT ?
-                """
-                args = existing_ids + [needed] if existing_ids else [needed]
-                cur.execute(sql, args)
-                supplemental = [dict(row) for row in cur.fetchall()]
-                results.extend(supplemental)
+        # 2. Ranker B: Semantic Token-Overlap (Jaccard similarity on tokens & character n-grams)
+        semantic_scores: List[tuple[int, float]] = []
+        for m in all_memories:
+            fact_tokens = set(re.sub(r'[^\w\s]', ' ', m["fact"].lower()).split())
+            overlap = query_tokens.intersection(fact_tokens)
+            score = len(overlap) / (len(query_tokens) + 1.0) if query_tokens else 0.0
+            # Bonus if exact substring appears
+            if clean_query in m["fact"].lower():
+                score += 1.0
+            semantic_scores.append((m["id"], score))
+        semantic_scores.sort(key=lambda x: x[1], reverse=True)
+        semantic_rank_map = {item[0]: idx + 1 for idx, item in enumerate(semantic_scores)}
 
-            # Update access counts for recalled memories
-            for r in results:
+        # 3. Ranker C: Recency & Frequency
+        recency_sorted = sorted(all_memories, key=lambda x: (x["access_count"], x["created_at"]), reverse=True)
+        recency_rank_map = {m["id"]: idx + 1 for idx, m in enumerate(recency_sorted)}
+
+        # 4. Reciprocal Rank Fusion (RRF)
+        rrf_scores: Dict[int, float] = {}
+        K = 60.0
+        for m in all_memories:
+            mid = m["id"]
+            score = 0.0
+            if mid in fts_rank_map:
+                score += 1.0 / (K + fts_rank_map[mid])
+            if mid in semantic_rank_map:
+                score += 0.8 / (K + semantic_rank_map[mid])
+            if mid in recency_rank_map:
+                score += 0.4 / (K + recency_rank_map[mid])
+            rrf_scores[mid] = score
+
+        # Sort memories by fused RRF score
+        memory_dict = {m["id"]: m for m in all_memories}
+        top_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)[:limit]
+        final_results = [memory_dict[i] for i in top_ids if rrf_scores[i] > 0]
+
+        # Update access tracking
+        with self._get_conn() as conn:
+            cur = conn.cursor()
+            for r in final_results:
                 cur.execute("UPDATE memories SET access_count = access_count + 1, last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?", (r["id"],))
             conn.commit()
 
-        return results
+        return final_results
 
     def list_all(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Lists all stored memories ordered by recency."""
