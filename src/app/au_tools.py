@@ -687,6 +687,27 @@ def _execute_legacy_action(action_str: str) -> ToolResult:
     elif "get_repo_map" in action_str.lower():
         return run_get_repo_map(GetRepoMapArgs())
 
+    # read_file("path")
+    m = re.match(r'read_file\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_read_file(ReadFileArgs(path=m.group(1).strip("'\"")))
+
+    # write_file("path", "content")
+    m = re.match(r'write_file\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_write_file(WriteFileArgs(path=m.group(1).strip("'\""), content=m.group(2).strip("'\"")))
+
+    # edit_file_patch("path", "search", "replace")
+    m = re.match(r'edit_file_patch\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_edit_file_patch(EditFilePatchArgs(path=m.group(1).strip("'\""), search_block=m.group(2).strip("'\""), replace_block=m.group(3).strip("'\"")))
+
+    # execute_bash("command")
+    m = re.match(r'execute_bash\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        cmd_str = m.group(1).strip("'\"")
+        return run_execute_bash(ExecuteBashArgs(command=cmd_str))
+
     # Fallback to safe bash execution
     return run_execute_bash(ExecuteBashArgs(command=action_str))
 

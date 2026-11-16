@@ -781,6 +781,50 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         }
     }
 
+    // MARK: - Orchestrator Task Queue & Memory Purge
+    @objc func showOrchestratorQueue() {
+        let scriptPath = NSString(string: "~/Downloads/offline ai/src/app/au_orchestrator.py").expandingTildeInPath
+        let pythonPath = "/Users/aditya/.local/share/uv/tools/open-webui/bin/python"
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pythonPath)
+        proc.arguments = [scriptPath, "queue", "--limit", "15"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        try? proc.run()
+        proc.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let queueText = String(data: data, encoding: .utf8) ?? "No active tasks in queue."
+
+        let alert = NSAlert()
+        alert.messageText = "AU Central Orchestrator — Task Queue"
+        alert.informativeText = queueText
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Copy to Clipboard")
+        alert.addButton(withTitle: "Done")
+        alert.beginSheetModal(for: self.window) { resp in
+            if resp == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(queueText, forType: .string)
+            }
+        }
+    }
+
+    @objc func purgeUnifiedMemory() {
+        let scriptPath = NSString(string: "~/Downloads/offline ai/src/app/au_orchestrator.py").expandingTildeInPath
+        let pythonPath = "/Users/aditya/.local/share/uv/tools/open-webui/bin/python"
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pythonPath)
+        proc.arguments = [scriptPath, "purge"]
+        try? proc.run()
+        proc.waitUntilExit()
+
+        updateHardwareTelemetry()
+        statusDetailLabel?.stringValue = "🧹 Purged Unified Memory: idle models unloaded from VRAM."
+    }
+
     // MARK: - NSToolbarDelegate
     func setupToolbar() {
         let toolbar = NSToolbar(identifier: "AUToolbar")
@@ -1062,6 +1106,9 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         assistantMenu.addItem(withTitle: "Inspect Image with Local Vision...", action: #selector(inspectImageWithVision), keyEquivalent: "I")
         assistantMenu.addItem(withTitle: "Export Chat to Markdown...", action: #selector(exportChatToMarkdown), keyEquivalent: "E")
         assistantMenu.addItem(withTitle: "View Project Architecture Map...", action: #selector(showRepoMap), keyEquivalent: "R")
+        assistantMenu.addItem(NSMenuItem.separator())
+        assistantMenu.addItem(withTitle: "View Orchestrator Task Queue...", action: #selector(showOrchestratorQueue), keyEquivalent: "Q")
+        assistantMenu.addItem(withTitle: "Purge Unified Memory (Release Models)", action: #selector(purgeUnifiedMemory), keyEquivalent: "U")
 
         // Edit Menu
         let editMenuItem = NSMenuItem()

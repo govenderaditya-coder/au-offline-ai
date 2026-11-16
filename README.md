@@ -32,6 +32,18 @@
 - **Dify-Inspired Hybrid RRF Search:** Combines SQLite FTS5 BM25 keyword rankings with semantic token-overlap and recency scores using Reciprocal Rank Fusion (RRF) for pin-point retrieval accuracy.
 - **Offline Web Research & Article Scraper (`au_tools.py`):** Native tools `browse_url` and `search_web_summary` that query DuckDuckGo and fetch clean, ad-free article text for the agent without opening browser tabs.
 - **Khoj-Style Local Notes Watcher (`tools/au-watcher`):** Background daemon that automatically monitors `~/Documents/AU_Notes` and indexes new notes into Mem0 memory.
+- **Central Local Orchestrator (`src/app/au_orchestrator.py`):** Hub-and-Spoke coordination core. All requests are tracked tasks dispatched through a central SQLite queue (`~/.offline-ai/orchestrator.db`); agents never communicate directly peer-to-peer.
+- **Apple Silicon M4 Low-RAM Governor:** Real-time Mach kernel memory monitor. Dynamically gates task dispatch based on unified memory pressure:
+  - `🟢 GREEN (< 12.0 GB used)`: Dispatches all interactive and background tasks.
+  - `🟡 YELLOW (12.0–13.2 GB used)`: Pauses heavy batch/TTS jobs to protect chat responsiveness.
+  - `🔴 RED (< 2.2 GB available)`: Freezes new execution, purges idle models via `keep_alive: 0`, and collects memory.
+- **Lazy Model Loading & Unloading:** Interactive models are kept warm with a 5-minute timeout (`keep_alive: "5m"`), while heavy tasks trigger immediate VRAM release (`tools/au --purge`).
+- **Domain Layer Handlers:**
+  - `Chat Layer`: Simple conversational agent powered by `au-assistant:latest` + Mem0 memory grounding.
+  - `Coding Layer`: Code Architect agent with AST repo map, precision diffing (`edit_file_patch`), syntax checks, and git auto-commit.
+  - `Document Search Layer`: Layout-aware document parsing + Dify RRF hybrid search.
+  - `System Layer`: 18 MCP system automation tools for macOS.
+  - `Audio Layer`: Voice synthesis and voice cloning with memory pre-flight check.
 - **Jan-Inspired Apple Silicon Hardware Telemetry HUD:** Real-time RAM and unified memory pressure gauge in `AU.app` toolbar (`RAM: 4.1 / 16.0 GB 🟢 M4 Optimal`).
 - **Mem0 Offline Personal Memory Engine (`tools/au-memory`):** SQLite + FTS5 full-text search engine that remembers user preferences, habits, and explicit notes across sessions without any cloud service.
 - **OpenHands Multi-Step Action/Observation Loop:** Autonomous multi-turn problem solving (up to 5 steps). AU plans, executes an action, inspects the factual observation, and reflects before speaking.

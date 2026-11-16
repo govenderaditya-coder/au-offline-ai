@@ -29,6 +29,10 @@ import au_actions
 import au_tools
 import au_memory
 import au_voice_id
+import au_orchestrator
+
+# Initialize Central Orchestrator Core
+orchestrator = au_orchestrator.AUOrchestrator()
 
 # Initialize Faster-Whisper locally
 from faster_whisper import WhisperModel
@@ -212,97 +216,54 @@ def process_command(command: str):
     except Exception:
         pass
 
-    # Retrieve relevant personal memory context
-    memory_context = memory_engine.format_context_prompt(command)
+    # Determine target domain layer
     active_model, persona_name, persona_desc = get_active_model_and_persona()
-
-    # Base system instructions with MCP tool capabilities
-    system_prompt = (
-        f"{persona_desc}\n"
-        "You execute tasks on macOS using action tags or JSON tool calls.\n"
-        "Available actions:\n"
-        "- [ACTION: open_app(\"App Name\")]\n"
-        "- [ACTION: close_app(\"App Name\")]\n"
-        "- [ACTION: set_volume(percentage_0_to_100)]\n"
-        "- [ACTION: media_control(\"play\"|\"pause\"|\"next\"|\"prev\")]\n"
-        "- [ACTION: search_web(\"query\")]\n"
-        "- [ACTION: search_web_summary(\"query\")]\n"
-        "- [ACTION: open_url(\"https://...\")]\n"
-        "- [ACTION: browse_url(\"https://...\")]\n"
-        "- [ACTION: get_battery()]\n"
-        "- [ACTION: get_disk_space()]\n"
-        "- [ACTION: get_time()]\n"
-        "- [ACTION: take_screenshot()]\n"
-        "- [ACTION: create_note(\"Title\", \"Content\")]\n"
-        "- [ACTION: open_folder(\"path\")]\n"
-        "- [ACTION: read_file(\"path\")]\n"
-        "- [ACTION: write_file(\"path\", \"content\")]\n"
-        "- [ACTION: edit_file_patch(\"path\", \"search_block\", \"replace_block\")]\n"
-        "- [ACTION: verify_syntax(\"path\")]\n"
-        "- [ACTION: parse_document(\"path\")]\n"
-        "- [ACTION: git_auto_commit(\"message\")]\n"
-        "- [ACTION: execute_bash(\"command\")]\n"
-        "\nGUIDELINES:\n"
-        "1. Emit action tags first when an action or information retrieval is required.\n"
-        "2. Keep spoken responses concise, friendly, and natural (1-2 sentences) for voice.\n"
-        "3. When you receive an Observation, use the factual observation to answer the user accurately.\n"
-        + memory_context
-    )
+    if persona_name == "coder" or any(k in cmd_lower for k in ["code", "syntax", "git commit", "diff", "edit file", "repo"]):
+        layer = "coding"
+        cost = au_orchestrator.MemoryCost.MEDIUM
+    elif persona_name == "researcher" or any(k in cmd_lower for k in ["document", "pdf", "summarize notes", "research paper"]):
+        layer = "document_search"
+        cost = au_orchestrator.MemoryCost.MEDIUM
+    elif any(k in cmd_lower for k in ["volume", "battery", "open app", "close app", "screenshot", "disk", "time"]):
+        layer = "chat"
+        cost = au_orchestrator.MemoryCost.LOW
+    else:
+        layer = "chat"
+        cost = au_orchestrator.MemoryCost.LOW
 
     emit_state("THINKING")
-    print(f"🧠 [AU THINKING ({persona_name.upper()})]: Analyzing request: \"{command}\"", flush=True)
+    print(f"🧠 [AU ORCHESTRATOR ({layer.upper()})]: Dispatching \"{command}\"", flush=True)
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": command}
-    ]
+    task = au_orchestrator.AUTask(
+        layer=layer,
+        prompt=command,
+        payload={"is_voice": True},
+        priority=au_orchestrator.TaskPriority.URGENT,
+        memory_cost=cost
+    )
+    orchestrator.queue.submit(task)
+    completed_task = orchestrator.dispatch(task)
 
-    max_steps = 5
-    clean_speech = ""
+    if completed_task.status == au_orchestrator.TaskStatus.PAUSED:
+        speak("Task paused: Memory is tight on Apple Silicon. I will resume when RAM clears.")
+        return "continue"
 
-    for step in range(max_steps):
-        raw_response = query_au_chat(messages, model=active_model)
+    if completed_task.status == au_orchestrator.TaskStatus.FAILED:
+        speak(f"I had trouble completing that task: {completed_task.error}")
+        return "continue"
 
-        # Parse actions and tool calls
-        clean_text, executed_actions, tool_results = au_tools.parse_and_execute_all(raw_response)
-        clean_speech = clean_text or clean_speech
+    res = completed_task.result or {}
+    final_speech = res.get("text", "")
+    actions = res.get("actions", [])
 
-        # If no actions were called, this is the final spoken response
-        if not executed_actions:
-            final_speech = clean_text or raw_response
-            speak(final_speech)
-            return "continue"
-
-        # Actions were executed
+    if actions:
         emit_state("EXECUTING")
-        for act in executed_actions:
+        for act in actions:
             print(f"[AU_ACTION:{act}]", flush=True)
             print(f"⚡ [ACTION EXECUTED]: {act}", flush=True)
 
-        # Check if an observation is needed (information retrieval tool vs simple side-effect)
-        has_info_retrieval = any(
-            any(k in act.lower() for k in ["battery", "disk", "time", "read", "bash", "status", "free out of", "%", "screenshot saved", "created note"])
-            for act in executed_actions
-        )
-
-        # If it was a simple side-effect and the assistant already spoke a complete sentence, finish immediately
-        if not has_info_retrieval and clean_text and len(clean_text) > 12:
-            speak(clean_text)
-            return "continue"
-
-        # Feed the Observation back into the OpenHands loop
-        observation_str = "Observation: " + " | ".join(executed_actions)
-        messages.append({"role": "assistant", "content": raw_response})
-        messages.append({
-            "role": "user",
-            "content": f"{observation_str}\nNow provide a concise, natural spoken response for the user based on this observation."
-        })
-
-        emit_state("THINKING")
-
-    # If loop concludes, speak last response
-    if clean_speech:
-        speak(clean_speech)
+    speak(final_speech)
+    return "continue"
     return "continue"
 
 def main():
