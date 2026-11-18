@@ -32,6 +32,12 @@
 - **Dify-Inspired Hybrid RRF Search:** Combines SQLite FTS5 BM25 keyword rankings with semantic token-overlap and recency scores using Reciprocal Rank Fusion (RRF) for pin-point retrieval accuracy.
 - **Offline Web Research & Article Scraper (`au_tools.py`):** Native tools `browse_url` and `search_web_summary` that query DuckDuckGo and fetch clean, ad-free article text for the agent without opening browser tabs.
 - **Khoj-Style Local Notes Watcher (`tools/au-watcher`):** Background daemon that automatically monitors `~/Documents/AU_Notes` and indexes new notes into Mem0 memory.
+- **Emotional Intelligence & Personality Engine (`au_emotion.py` & `au_personality.py`):** Dynamic mood tracking, empathy mirroring, user sentiment detection, intellectual curiosity, self-awareness, and thoughtful technical pushback.
+- **Continuous Learning & Self-Improvement Engine (`au_learning.py`):** Automatically detects user corrections and stores behavioral rules in SQLite (`~/.offline-ai/learning.db`) so AU never repeats mistakes.
+- **Apple Neural Engine Screen Vision OCR (`au_vision.py` & `tools/au-ocr`):** 100% offline, hardware-accelerated screen comprehension using Apple's Vision framework (`VNRecognizeTextRequest`). Ask AU *"What is on my screen?"* or *"Analyze this error window"*.
+- **Autonomous Multi-Step Goal Planner (`au_planner.py`):** Decomposes complex objectives into structured 4-phase roadmaps saved directly into `~/Documents/AU_Notes/Plans/`.
+- **Proactive Daily Executive Briefings (`au_scheduler.py`):** Instant morning briefings with weather, battery health, and pending work, plus evening git commit recaps.
+- **Expanded 43 MCP Type-Safe Tools (`au_tools.py`):** Clipboard read/write, native weather, Wi-Fi status, macOS reminders, wallpaper switching, directory listings, public IP, text typing, file diffing, compression, and more.
 - **Central Local Orchestrator (`src/app/au_orchestrator.py`):** Hub-and-Spoke coordination core. All requests are tracked tasks dispatched through a central SQLite queue (`~/.offline-ai/orchestrator.db`); agents never communicate directly peer-to-peer.
 - **Apple Silicon M4 Low-RAM Governor:** Real-time Mach kernel memory monitor. Dynamically gates task dispatch based on unified memory pressure:
   - `🟢 GREEN (< 12.0 GB used)`: Dispatches all interactive and background tasks.

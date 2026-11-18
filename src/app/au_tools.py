@@ -533,6 +533,12 @@ class DiffFilesArgs(BaseModel):
     path1: str = Field(..., description="First file path")
     path2: str = Field(..., description="Second file path")
 
+class ReadScreenArgs(BaseModel):
+    query: str = Field("What is currently visible on my screen?", description="Question to answer about screen content")
+
+class CreatePlanArgs(BaseModel):
+    goal: str = Field(..., min_length=3, description="Goal or objective to plan and decompose")
+
 # --- Runners ---
 
 def run_get_clipboard() -> ToolResult:
@@ -819,6 +825,49 @@ def run_diff_files(args: DiffFilesArgs) -> ToolResult:
     except Exception as e:
         return ToolResult(success=False, message=f"diff_files error: {e}")
 
+def run_read_screen(args: Optional[ReadScreenArgs] = None) -> ToolResult:
+    """Captures the active screen and performs Apple Vision OCR to extract and read visible text."""
+    try:
+        from au_vision import AUScreenVision
+        vision = AUScreenVision()
+        text = vision.read_screen_text()
+        if not text:
+            return ToolResult(success=True, message="Screen captured, but no visible text was detected.")
+        truncated = text[:2500] + ("\n... [remaining screen text truncated]" if len(text) > 2500 else "")
+        return ToolResult(success=True, message=f"Screen OCR Text:\n{truncated}", data={"screen_text": text})
+    except Exception as e:
+        return ToolResult(success=False, message=f"read_screen error: {e}")
+
+def run_create_plan(args: CreatePlanArgs) -> ToolResult:
+    """Decomposes a user goal into structured phases and saves an interactive plan."""
+    try:
+        from au_planner import AUPlanner
+        planner = AUPlanner()
+        res = planner.create_plan(args.goal)
+        return ToolResult(success=True, message=f"Created Plan: {res['title']}\nSaved at: {res['plan_path']}\n\n{res['markdown']}", data=res)
+    except Exception as e:
+        return ToolResult(success=False, message=f"create_plan error: {e}")
+
+def run_get_morning_briefing() -> ToolResult:
+    """Generates the morning executive briefing with weather, battery, and work tasks."""
+    try:
+        from au_scheduler import AUBriefingEngine
+        b = AUBriefingEngine()
+        briefing = b.generate_morning_briefing()
+        return ToolResult(success=True, message=briefing, data={"briefing": briefing})
+    except Exception as e:
+        return ToolResult(success=False, message=f"get_morning_briefing error: {e}")
+
+def run_get_evening_recap() -> ToolResult:
+    """Generates the daily evening productivity recap."""
+    try:
+        from au_scheduler import AUBriefingEngine
+        b = AUBriefingEngine()
+        recap = b.generate_evening_recap()
+        return ToolResult(success=True, message=recap, data={"recap": recap})
+    except Exception as e:
+        return ToolResult(success=False, message=f"get_evening_recap error: {e}")
+
 # ==============================================================================
 # Model Context Protocol (MCP) Registry
 # ==============================================================================
@@ -864,6 +913,11 @@ TOOL_REGISTRY = {
     "speak_text": (SpeakTextArgs, run_speak_text, "Speak text aloud using the macOS 'say' command"),
     "word_count_file": (WordCountFileArgs, run_word_count_file, "Get line, word, and character counts for a file"),
     "diff_files": (DiffFilesArgs, run_diff_files, "Diff two files and return a readable unified diff"),
+    # v5.5 Superpower Tools
+    "read_screen": (ReadScreenArgs, run_read_screen, "Capture the Mac screen and extract all visible text via Apple Neural Engine Vision OCR"),
+    "create_plan": (CreatePlanArgs, run_create_plan, "Decompose a complex user goal into structured phases and save an interactive markdown plan"),
+    "get_morning_briefing": (None, run_get_morning_briefing, "Generate the morning executive briefing with weather, hardware, and tasks"),
+    "get_evening_recap": (None, run_get_evening_recap, "Generate the daily evening recap of git commits, tasks, and achievements"),
 }
 
 def get_mcp_tools() -> List[Dict[str, Any]]:
@@ -1148,6 +1202,23 @@ def _execute_legacy_action(action_str: str) -> ToolResult:
     m = re.match(r'diff_files\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
     if m:
         return run_diff_files(DiffFilesArgs(path1=m.group(1).strip("'\""), path2=m.group(2).strip("'\"")))
+
+    # read_screen
+    if "read_screen" in action_str.lower() or "screen_ocr" in action_str.lower():
+        return run_read_screen()
+
+    # create_plan("goal")
+    m = re.match(r'create_plan\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_create_plan(CreatePlanArgs(goal=m.group(1).strip("'\"")))
+
+    # get_morning_briefing
+    if "briefing" in action_str.lower():
+        return run_get_morning_briefing()
+
+    # get_evening_recap
+    if "recap" in action_str.lower():
+        return run_get_evening_recap()
 
     # execute_bash("command")
     m = re.match(r'execute_bash\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)

@@ -40,6 +40,11 @@ def main():
     parser.add_argument("--status", action="store_true", help="Show M4 Unified RAM telemetry & task queue status")
     parser.add_argument("--queue", action="store_true", help="List recent tasks in the orchestrator queue")
     parser.add_argument("--purge", action="store_true", help="Unload idle models from VRAM and free Unified Memory")
+    parser.add_argument("--screen", action="store_true", help="Capture screen and analyze with Apple Vision OCR")
+    parser.add_argument("--plan", action="store_true", help="Generate an autonomous execution plan for a goal")
+    parser.add_argument("--learn", action="store_true", help="Teach AU a persistent rule or list learned rules")
+    parser.add_argument("--briefing", action="store_true", help="Generate the morning executive briefing")
+    parser.add_argument("--recap", action="store_true", help="Generate the daily evening productivity recap")
     parser.add_argument("--model", type=str, default=None, help="Override local model name")
 
     args = parser.parse_args()
@@ -70,6 +75,48 @@ def main():
         print("🧹 Memory purged: idle models unloaded from Unified RAM.")
         return
 
+    if args.briefing:
+        from au_scheduler import AUBriefingEngine
+        b = AUBriefingEngine(orchestrator=orchestrator)
+        briefing_text = b.generate_morning_briefing()
+        print(briefing_text)
+        if args.voice:
+            au_tools.run_speak_text(au_tools.SpeakTextArgs(text=briefing_text))
+        return
+
+    if args.recap:
+        from au_scheduler import AUBriefingEngine
+        b = AUBriefingEngine(orchestrator=orchestrator)
+        recap_text = b.generate_evening_recap()
+        print(recap_text)
+        if args.voice:
+            au_tools.run_speak_text(au_tools.SpeakTextArgs(text=recap_text))
+        return
+
+    if args.learn:
+        from au_learning import AULearningEngine
+        learning = AULearningEngine()
+        user_query = " ".join(args.prompt).strip()
+        if user_query:
+            learning.add_rule(user_query, category="user_preference", source="cli")
+            print(f"🧠 Learned new rule: \"{user_query}\"")
+        else:
+            print("📋 Active Learned Rules:")
+            for r in learning.list_rules():
+                print(f" • [{r['category']}] {r['rule']}")
+        return
+
+    if args.plan:
+        from au_planner import AUPlanner
+        planner = AUPlanner(orchestrator=orchestrator)
+        goal = " ".join(args.prompt).strip() or "Project execution and maintenance plan"
+        print(f"🎯 Creating autonomous plan for: '{goal}'...", file=sys.stderr)
+        res = planner.create_plan(goal)
+        print(f"✨ Plan created: {res['title']}")
+        print(f"📁 Saved to: {res['plan_path']}\n")
+        print(res["markdown"])
+        return
+
     # Read piped stdin if present
     stdin_content = ""
     if not sys.stdin.isatty():
@@ -80,17 +127,26 @@ def main():
 
     user_query = " ".join(args.prompt).strip()
 
-    if not user_query and not stdin_content:
+    if not user_query and not stdin_content and not args.screen:
         parser.print_help()
         sys.exit(0)
 
-    # Combine stdin and prompt
-    full_prompt = user_query
-    if stdin_content:
-        if full_prompt:
-            full_prompt = f"{full_prompt}\n\n[INPUT DATA]:\n{stdin_content}"
-        else:
-            full_prompt = f"Analyze and respond to this input:\n\n{stdin_content}"
+    # Screen vision query
+    if args.screen:
+        from au_vision import AUScreenVision
+        vision = AUScreenVision()
+        query = user_query or "Explain what is on the screen and highlight any errors or key details"
+        print("📷 Capturing screen and running Apple Vision OCR...", file=sys.stderr)
+        screen_txt = vision.read_screen_text()
+        full_prompt = f"The user captured their screen. Here is the text visible on their screen via Apple Vision OCR:\n```text\n{screen_txt[:3000]}\n```\n\nQuestion: {query}"
+    else:
+        # Combine stdin and prompt
+        full_prompt = user_query
+        if stdin_content:
+            if full_prompt:
+                full_prompt = f"{full_prompt}\n\n[INPUT DATA]:\n{stdin_content}"
+            else:
+                full_prompt = f"Analyze and respond to this input:\n\n{stdin_content}"
 
     # Determine domain layer & memory cost
     if args.research:

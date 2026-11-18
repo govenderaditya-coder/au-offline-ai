@@ -825,6 +825,96 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         statusDetailLabel?.stringValue = "🧹 Purged Unified Memory: idle models unloaded from VRAM."
     }
 
+    // MARK: - Screen Vision OCR, Briefings & Learning
+    @objc func triggerScreenAnalysis() {
+        let scriptPath = NSString(string: "~/Downloads/offline ai/src/app/au_cli.py").expandingTildeInPath
+        let pythonPath = "/Users/aditya/.local/share/uv/tools/open-webui/bin/python"
+
+        statusDetailLabel?.stringValue = "📷 Analyzing active screen via Apple Vision OCR..."
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pythonPath)
+        proc.arguments = [scriptPath, "--screen", "Summarize what is visible on this screen and highlight any key information"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        try? proc.run()
+        proc.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let result = String(data: data, encoding: .utf8) ?? "Unable to analyze screen."
+
+        let alert = NSAlert()
+        alert.messageText = "AU Screen Vision Analysis"
+        alert.informativeText = result
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Copy to Clipboard")
+        alert.addButton(withTitle: "Done")
+        alert.beginSheetModal(for: self.window) { resp in
+            if resp == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(result, forType: .string)
+            }
+        }
+        statusDetailLabel?.stringValue = "Screen Vision Analysis complete."
+    }
+
+    @objc func showMorningBriefing() {
+        let scriptPath = NSString(string: "~/Downloads/offline ai/src/app/au_cli.py").expandingTildeInPath
+        let pythonPath = "/Users/aditya/.local/share/uv/tools/open-webui/bin/python"
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pythonPath)
+        proc.arguments = [scriptPath, "--briefing"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        try? proc.run()
+        proc.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let result = String(data: data, encoding: .utf8) ?? "Unable to generate briefing."
+
+        let alert = NSAlert()
+        alert.messageText = "AU Morning Executive Briefing"
+        alert.informativeText = result
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Copy to Clipboard")
+        alert.addButton(withTitle: "Done")
+        alert.beginSheetModal(for: self.window) { resp in
+            if resp == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(result, forType: .string)
+            }
+        }
+    }
+
+    @objc func showLearnedRules() {
+        let scriptPath = NSString(string: "~/Downloads/offline ai/src/app/au_cli.py").expandingTildeInPath
+        let pythonPath = "/Users/aditya/.local/share/uv/tools/open-webui/bin/python"
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pythonPath)
+        proc.arguments = [scriptPath, "--learn"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        try? proc.run()
+        proc.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let result = String(data: data, encoding: .utf8) ?? "No learned rules found."
+
+        let alert = NSAlert()
+        alert.messageText = "AU Continuous Learning Engine — Active Rules"
+        alert.informativeText = result
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Copy to Clipboard")
+        alert.addButton(withTitle: "Done")
+        alert.beginSheetModal(for: self.window) { resp in
+            if resp == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(result, forType: .string)
+            }
+        }
+    }
+
     // MARK: - NSToolbarDelegate
     func setupToolbar() {
         let toolbar = NSToolbar(identifier: "AUToolbar")
@@ -1109,6 +1199,10 @@ class AUApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelega
         assistantMenu.addItem(NSMenuItem.separator())
         assistantMenu.addItem(withTitle: "View Orchestrator Task Queue...", action: #selector(showOrchestratorQueue), keyEquivalent: "Q")
         assistantMenu.addItem(withTitle: "Purge Unified Memory (Release Models)", action: #selector(purgeUnifiedMemory), keyEquivalent: "U")
+        assistantMenu.addItem(NSMenuItem.separator())
+        assistantMenu.addItem(withTitle: "Analyze Active Screen (Vision OCR)", action: #selector(triggerScreenAnalysis), keyEquivalent: "S")
+        assistantMenu.addItem(withTitle: "Morning Executive Briefing", action: #selector(showMorningBriefing), keyEquivalent: "B")
+        assistantMenu.addItem(withTitle: "View Learned Behavioral Rules", action: #selector(showLearnedRules), keyEquivalent: "L")
 
         // Edit Menu
         let editMenuItem = NSMenuItem()

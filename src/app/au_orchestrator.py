@@ -57,10 +57,18 @@ try:
     import au_emotion
     import au_personality
     import au_context
+    import au_learning
+    import au_vision
+    import au_planner
+    import au_scheduler
 except ImportError:
     au_emotion = None
     au_personality = None
     au_context = None
+    au_learning = None
+    au_vision = None
+    au_planner = None
+    au_scheduler = None
 
 # Storage paths
 ORCHESTRATOR_DIR = os.path.expanduser("~/.offline-ai")
@@ -554,6 +562,26 @@ class ChatHandler(BaseLayerHandler):
             except Exception:
                 pass
 
+        # Step 3: Self-Improvement & Screen Vision Injections
+        learning_engine = getattr(orchestrator, "learning_engine", None)
+        learning_injection = ""
+        if learning_engine:
+            try:
+                learning_engine.detect_and_learn_from_feedback(prompt)
+                learning_injection = learning_engine.get_rules_prompt_injection()
+            except Exception:
+                pass
+
+        screen_context = ""
+        vision_engine = getattr(orchestrator, "vision_engine", None)
+        if vision_engine and any(k in prompt.lower() for k in ["on my screen", "read my screen", "look at my screen", "see on my screen", "active screen"]):
+            try:
+                screen_txt = vision_engine.read_screen_text()
+                if screen_txt:
+                    screen_context = f"\n[ACTIVE SCREEN TEXT (APPLE VISION OCR)]:\n{screen_txt[:2500]}\n"
+            except Exception:
+                pass
+
         actions_list = (
             "Available actions:\n"
             "- [ACTION: open_app(\"App Name\")]\n"
@@ -563,6 +591,8 @@ class ChatHandler(BaseLayerHandler):
             "- [ACTION: get_disk_space()]\n"
             "- [ACTION: get_system_status()]\n"
             "- [ACTION: take_screenshot()]\n"
+            "- [ACTION: read_screen()]\n"
+            "- [ACTION: create_plan(\"goal\")]\n"
             "- [ACTION: create_note(\"Title\", \"Content\")]\n"
             "- [ACTION: browse_url(\"https://...\")]\n"
             "- [ACTION: execute_bash(\"command\")]\n"
@@ -573,6 +603,8 @@ class ChatHandler(BaseLayerHandler):
             f"{voice_instruction}"
             f"{emotion_injection}"
             f"{context_injection}"
+            f"{learning_injection}"
+            f"{screen_context}"
             f"{actions_list}"
             + memory_context
         )
@@ -853,6 +885,10 @@ class AUOrchestrator:
         self.emotion_engine = au_emotion.AUEmotionEngine() if au_emotion else None
         self.personality_engine = au_personality.AUPersonalityEngine() if au_personality else None
         self.context_engine = au_context.AUContextEngine() if au_context else None
+        self.learning_engine = au_learning.AULearningEngine() if au_learning else None
+        self.vision_engine = au_vision.AUScreenVision() if au_vision else None
+        self.planner_engine = au_planner.AUPlanner(orchestrator=self) if au_planner else None
+        self.briefing_engine = au_scheduler.AUBriefingEngine(orchestrator=self) if au_scheduler else None
 
         # Initialize outer domain layers
         self.layers: Dict[str, BaseLayerHandler] = {
