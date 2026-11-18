@@ -53,6 +53,15 @@ try:
 except ImportError:
     au_document_parser = None
 
+try:
+    import au_emotion
+    import au_personality
+    import au_context
+except ImportError:
+    au_emotion = None
+    au_personality = None
+    au_context = None
+
 # Storage paths
 ORCHESTRATOR_DIR = os.path.expanduser("~/.offline-ai")
 DB_PATH = os.path.join(ORCHESTRATOR_DIR, "orchestrator.db")
@@ -503,11 +512,49 @@ class ChatHandler(BaseLayerHandler):
                 pass
             memory_context = self.memory_engine.format_context_prompt(prompt)
 
+        # Step 2: Emotional & Context Injections
+        emotion_engine = getattr(orchestrator, "emotion_engine", None)
+        personality_engine = getattr(orchestrator, "personality_engine", None)
+        context_engine = getattr(orchestrator, "context_engine", None)
+
+        current_mood = "calm"
+        if emotion_engine:
+            try:
+                user_emotion = emotion_engine.analyze_user_emotion(prompt)
+                state = emotion_engine.update_mood(user_emotion, context="chat")
+                current_mood = getattr(state, "current_mood", "calm")
+            except Exception:
+                pass
+
         voice_instruction = "Keep spoken responses concise, friendly, and natural (1-2 sentences) for voice.\n" if is_voice else ""
 
-        system_prompt = (
-            "You are AU, the user's personal, highly capable AI assistant running 100% locally on Apple Silicon.\n"
-            f"{voice_instruction}"
+        if personality_engine:
+            try:
+                base_persona = personality_engine.generate_persona_system_prompt(mood=current_mood, context="chat")
+            except Exception:
+                base_persona = "You are AU, the user's personal, highly capable AI assistant running 100% locally on Apple Silicon."
+        else:
+            base_persona = "You are AU, the user's personal, highly capable AI assistant running 100% locally on Apple Silicon."
+
+        emotion_injection = ""
+        if emotion_engine:
+            try:
+                inj = emotion_engine.get_system_prompt_injection()
+                if inj:
+                    emotion_injection = f"\n{inj}\n"
+            except Exception:
+                pass
+
+        context_injection = ""
+        if context_engine:
+            try:
+                inj = context_engine.build_context_injection()
+                if inj:
+                    context_injection = f"\n{inj}\n"
+            except Exception:
+                pass
+
+        actions_list = (
             "Available actions:\n"
             "- [ACTION: open_app(\"App Name\")]\n"
             "- [ACTION: close_app(\"App Name\")]\n"
@@ -519,6 +566,14 @@ class ChatHandler(BaseLayerHandler):
             "- [ACTION: create_note(\"Title\", \"Content\")]\n"
             "- [ACTION: browse_url(\"https://...\")]\n"
             "- [ACTION: execute_bash(\"command\")]\n"
+        )
+
+        system_prompt = (
+            f"{base_persona}\n"
+            f"{voice_instruction}"
+            f"{emotion_injection}"
+            f"{context_injection}"
+            f"{actions_list}"
             + memory_context
         )
 
@@ -554,6 +609,22 @@ class ChatHandler(BaseLayerHandler):
             else:
                 final_text = raw_res
                 break
+
+        # Log interaction to context engine
+        if context_engine:
+            try:
+                context_engine.log_interaction(query=prompt, response_summary=final_text[:120], tools_used=executed_actions)
+            except Exception:
+                pass
+
+        # Emotion prefix injection
+        if emotion_engine:
+            try:
+                prefix = emotion_engine.format_emotion_prefix(context="chat")
+                if prefix and not final_text.startswith(prefix):
+                    final_text = f"{prefix}{final_text}"
+            except Exception:
+                pass
 
         return {
             "text": final_text,
@@ -778,6 +849,11 @@ class AUOrchestrator:
         self.queue = AUTaskQueue()
         self.router = AUModelRouter()
 
+        # Initialize emotional, personality, and context engines
+        self.emotion_engine = au_emotion.AUEmotionEngine() if au_emotion else None
+        self.personality_engine = au_personality.AUPersonalityEngine() if au_personality else None
+        self.context_engine = au_context.AUContextEngine() if au_context else None
+
         # Initialize outer domain layers
         self.layers: Dict[str, BaseLayerHandler] = {
             "chat": ChatHandler(self.router),
@@ -909,6 +985,62 @@ class AUOrchestrator:
             }
         }
 
+    def get_au_status(self) -> str:
+        """
+        Returns a rich status string combining: RAM state, emotion state (mood + valence),
+        session summary, task queue count.
+        Example: "🧠 AU online | 😊 Mood: excited | Session: 45m, 8 queries | RAM: 5.4 GB / 🟢 | Queue: 0 tasks"
+        """
+        # 1. RAM State
+        mem = self.governor.get_memory_stats()
+        used_gb = mem.get("used_gb", 0.0)
+        state = mem.get("state", "GREEN")
+        state_icon = "🟢" if state == "GREEN" else ("🟡" if state == "YELLOW" else "🔴")
+        ram_str = f"RAM: {used_gb} GB / {state_icon}"
+
+        # 2. Emotion State
+        mood_icons = {
+            "happy": "😊",
+            "curious": "🤔",
+            "focused": "🎯",
+            "calm": "😌",
+            "concerned": "😟",
+            "excited": "😊",
+            "empathetic": "🤝",
+            "playful": "😄",
+            "proud": "🦁",
+            "tired": "🥱",
+        }
+        if self.emotion_engine and hasattr(self.emotion_engine, "_state"):
+            st = self.emotion_engine._state
+            mood = getattr(st, "current_mood", "calm")
+            valence = getattr(st, "valence", 0.0)
+            icon = mood_icons.get(mood, "😊")
+            val_sign = "+" if valence >= 0 else ""
+            emotion_str = f"{icon} Mood: {mood} (valence: {val_sign}{valence:.2f})"
+        else:
+            emotion_str = "😊 Mood: calm"
+
+        # 3. Session Summary
+        if self.context_engine and hasattr(self.context_engine, "session"):
+            sess = self.context_engine.session
+            elapsed_m = max(1, int((time.time() - getattr(sess, "start_time", time.time())) / 60))
+            q_count = getattr(sess, "query_count", 0)
+            session_str = f"Session: {elapsed_m}m, {q_count} queries"
+        else:
+            session_str = "Session: 1m, 0 queries"
+
+        # 4. Task Queue Count
+        try:
+            active_tasks = self.queue.list_tasks(status=TaskStatus.RUNNING, limit=50)
+            queued_tasks = self.queue.list_tasks(status=TaskStatus.QUEUED, limit=50)
+            queue_count = len(active_tasks) + len(queued_tasks)
+        except Exception:
+            queue_count = 0
+        queue_str = f"Queue: {queue_count} tasks"
+
+        return f"🧠 AU online | {emotion_str} | {session_str} | {ram_str} | {queue_str}"
+
 # ==============================================================================
 # 7. CLI COMMAND-LINE INTERFACE
 # ==============================================================================
@@ -943,6 +1075,7 @@ def main():
         print(res)
 
     elif args.command == "status":
+        print(orchestrator.get_au_status())
         status = orchestrator.get_status_overview()
         mem = status["memory"]
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")

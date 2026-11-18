@@ -18,6 +18,9 @@ import time
 import urllib.request
 import subprocess
 import signal
+import re
+import random
+from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RECORD_TOOL = os.path.join(SCRIPT_DIR, "tools", "au-record")
@@ -31,8 +34,172 @@ import au_memory
 import au_voice_id
 import au_orchestrator
 
+# Optional emotion/personality engines (graceful fallback)
+try:
+    import au_emotion
+    _emotion_engine = au_emotion.AUEmotionEngine()
+except Exception:
+    au_emotion = None
+    _emotion_engine = None
+
 # Initialize Central Orchestrator Core
 orchestrator = au_orchestrator.AUOrchestrator()
+
+# ── Session conversation memory (max 10 turns) ───────────────────────────────
+session_history: list[tuple[str, str]] = []  # [(user_text, au_response), ...]
+
+# ── Silence detection counter ─────────────────────────────────────────────────
+silence_count: int = 0
+
+# ── Wake-word variants ────────────────────────────────────────────────────────
+_WAKE_PATTERNS = [
+    r"\bhey\s+au\b",
+    r"\bau\s+wake\s+up\b",
+    r"\bwake\s+up\s+au\b",
+    r"\byo\s+au\b",
+    r"^au[,!.]?\s*$",         # bare "AU" (whole utterance)
+    r"\bhey\s+assistant\b",
+    r"\bau\b",                # any mention of "au" as a word
+]
+
+def is_addressed(text: str) -> bool:
+    """Return True if any wake-word variant is detected in text."""
+    t = text.lower().strip()
+    for pat in _WAKE_PATTERNS:
+        if re.search(pat, t):
+            return True
+    return False
+
+# ── Intent classifier ─────────────────────────────────────────────────────────
+_INTENT_RULES = [
+    # (intent, layer, keyword_patterns, urgency_boost)
+    ("code_request",    "coding",          [r"\b(code|function|class|script|bug|fix|debug|syntax|git|diff|refactor|implement)\b"], 0.0),
+    ("file_operation",  "chat",            [r"\b(file|folder|directory|open|save|delete|move|copy|rename|read)\b"], 0.0),
+    ("web_search",      "chat",            [r"\b(search|google|look up|find online|browse|web|internet)\b"], 0.0),
+    ("system_control",  "chat",            [r"\b(volume|brightness|battery|screenshot|app|launch|quit|close|sleep|restart)\b"], 0.0),
+    ("memory_query",    "chat",            [r"\b(remember|memory|memories|recall|forget|stored|know about me)\b"], 0.0),
+    ("document_search", "document_search", [r"\b(document|pdf|notes|research|paper|summarize|article)\b"], 0.0),
+    ("question",        "chat",            [r"^(what|who|where|when|why|how|is|are|does|do|can|could|would|should|tell me)\b"], 0.0),
+    ("command",         "chat",            [r"^(open|close|set|turn|play|pause|stop|start|run|show|hide|switch)\b"], 0.1),
+]
+
+def classify_voice_intent(text: str) -> dict:
+    """Classify spoken text into a structured intent dict."""
+    t = text.lower().strip()
+    entities: list[str] = []
+
+    # Extract simple entities: quoted strings, app names, file extensions
+    entities += re.findall(r'"([^"]+)"', t)
+    entities += re.findall(r'\b[\w-]+\.(?:py|js|ts|md|txt|pdf|json|sh)\b', t)
+
+    for intent, layer, patterns, urgency_boost in _INTENT_RULES:
+        for pat in patterns:
+            if re.search(pat, t):
+                urgency = 0.5 + urgency_boost
+                if any(w in t for w in ["urgent", "asap", "now", "immediately", "hurry"]):
+                    urgency = min(1.0, urgency + 0.3)
+                return {"intent": intent, "layer": layer, "urgency": urgency, "entities": entities}
+
+    return {"intent": "conversation", "layer": "chat", "urgency": 0.3, "entities": entities}
+
+# ── Emotional voice prefixes ───────────────────────────────────────────────────
+_EMOTION_PREFIXES: dict[str, list[str]] = {
+    "stressed":   ["I hear you — let me sort this out fast.", "On it, no worries."],
+    "frustrated": ["I get it, that's annoying. Let me fix it.", "Understood — let's tackle this together."],
+    "excited":    ["Yes! Let's do it.", "Love the energy — here we go!"],
+    "happy":      ["Great! Here's what I found.", "Wonderful — let me help."],
+    "curious":    ["Good question — let me think...", "Interesting! Here's my take."],
+    "tired":      ["Sure, I'll keep it brief.", "No problem — quick answer coming."],
+    "urgent":     ["Right away.", "On it immediately."],
+    "calm":       ["Sure.", "Of course."],
+}
+
+def get_emotional_voice_prefix(detected_emotion: str) -> str:
+    """Return an empathetic spoken opener based on detected user emotion."""
+    options = _EMOTION_PREFIXES.get(detected_emotion.lower(), [])
+    return random.choice(options) if options else ""
+
+# ── Quick-response table (bypasses neural model entirely) ─────────────────────
+def _quick_time() -> str:
+    return datetime.now().strftime("It is %I:%M %p.")
+
+def _quick_battery() -> str:
+    try:
+        res = au_tools.run_get_battery()
+        if res and res.message:
+            return res.message
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(["pmset", "-g", "batt"], text=True)
+        m = re.search(r"(\d+)%", out)
+        if m:
+            return f"Battery is at {m.group(1)} percent."
+    except Exception:
+        pass
+    return "Battery info is currently unavailable."
+
+def _quick_volume(direction: str) -> str:
+    try:
+        vol = 80 if direction == "up" else 30
+        res = au_tools.run_set_volume(au_tools.SetVolumeArgs(volume=vol))
+        if res and res.message:
+            return res.message
+        return f"Volume set {'up' if direction == 'up' else 'down'}."
+    except Exception:
+        try:
+            delta = "+ 10" if direction == "up" else "- 10"
+            cmd = f"set volume output volume (output volume of (get volume settings) {delta})"
+            subprocess.call(["osascript", "-e", cmd])
+            return f"Volume turned {direction}."
+        except Exception:
+            return "Volume adjusted."
+
+def _quick_media(action: str) -> str:
+    try:
+        res = au_tools.run_media_control(au_tools.MediaControlArgs(command=action))
+        if res and res.message:
+            return res.message
+        return f"{'Playing' if action == 'play' else 'Paused'} music."
+    except Exception:
+        try:
+            key = "play" if action == "play" else "pause"
+            subprocess.call(["osascript", "-e", f'tell application "Spotify" to {key}'])
+            return f"{'Playing' if action == 'play' else 'Paused'} music."
+        except Exception:
+            return "Media playback updated."
+
+QUICK_RESPONSES: dict[str, callable] = {
+    r"\bwhat(?:'s| is) the time\b|\bwhat time is it\b": _quick_time,
+    r"\bwhat(?:'s| is) (?:my )?battery\b":               _quick_battery,
+    r"\bvolume up\b":                                     lambda: _quick_volume("up"),
+    r"\bvolume down\b":                                   lambda: _quick_volume("down"),
+    r"\bplay music\b":                                    lambda: _quick_media("play"),
+    r"\bpause music\b":                                   lambda: _quick_media("pause"),
+}
+
+def try_quick_response(text: str) -> str | None:
+    """Return a quick spoken response if text matches a fast-path pattern, else None."""
+    t = text.lower().strip()
+    for pat, fn in QUICK_RESPONSES.items():
+        if re.search(pat, t):
+            return fn()
+    return None
+
+# ── Session history helpers ───────────────────────────────────────────────────
+def _add_to_history(user_text: str, au_response: str):
+    global session_history
+    session_history.append((user_text, au_response))
+    if len(session_history) > 10:
+        session_history = session_history[-10:]
+
+def _build_history_messages(persona_desc: str) -> list[dict]:
+    """Build Ollama message list from session history + current persona."""
+    msgs = [{"role": "system", "content": persona_desc}]
+    for u, a in session_history:
+        msgs.append({"role": "user",      "content": u})
+        msgs.append({"role": "assistant", "content": a})
+    return msgs
 
 # Initialize Faster-Whisper locally
 from faster_whisper import WhisperModel
@@ -172,43 +339,83 @@ def request_stop(_signum, _frame):
     emit_state("OFFLINE")
     raise KeyboardInterrupt
 
+def generate_startup_greeting() -> str:
+    """Generate an inspiring, mood- and time-aware opening greeting for AU startup."""
+    now = datetime.now()
+    hour = now.hour
+    if 5 <= hour < 12:
+        tod = "morning"
+    elif 12 <= hour < 17:
+        tod = "afternoon"
+    elif 17 <= hour < 21:
+        tod = "evening"
+    else:
+        tod = "night"
+
+    time_str = now.strftime("%I:%M %p")
+    mood = "calm"
+    opening = f"Good {tod}, Aditya!"
+    if _emotion_engine:
+        try:
+            mood = getattr(_emotion_engine._state, "current_mood", "calm")
+            opening = _emotion_engine.generate_greeting(tod)
+        except Exception:
+            pass
+    return f"{opening} It's {time_str}, and I'm feeling {mood}. Ready when you are."
+
 def process_command(command: str):
     """
     Parses user intent, executes Mac actions via OpenHands Action/Observation loop,
-    and speaks response with Mem0 personal context grounding.
+    and speaks response with Mem0 personal context grounding and emotional intelligence.
     """
     cmd_lower = command.lower().strip()
 
+    # 1. Quick responses (pure local, zero model latency)
+    quick = try_quick_response(command)
+    if quick:
+        speak(quick)
+        _add_to_history(command, quick)
+        return "continue"
+
+    # 2. Standby / sleep commands
     if "go to sleep" in cmd_lower or "stop listening" in cmd_lower:
         speak("Going to standby. Say 'Wake up AU' when you need me.")
         return "sleep"
 
+    # 3. Voice lock commands
     if "turn on voice lock" in cmd_lower:
         au_voice_id.set_voice_lock(True)
-        speak("Voice Lock enabled. I will now prioritize commands from Aditya.")
+        resp = "Voice Lock enabled. I will now prioritize commands from Aditya."
+        speak(resp)
+        _add_to_history(command, resp)
         return "continue"
 
     if "turn off voice lock" in cmd_lower:
         au_voice_id.set_voice_lock(False)
-        speak("Voice Lock disabled. Accepting all voice inputs.")
+        resp = "Voice Lock disabled. Accepting all voice inputs."
+        speak(resp)
+        _add_to_history(command, resp)
         return "continue"
 
-    # Direct memory commands
+    # 4. Direct memory commands
     if any(q in cmd_lower for q in ["what do you remember", "what are my memories", "show my memories", "check memory"]):
         memories = memory_engine.list_all(limit=5)
         if not memories:
-            speak("I do not have any personal memories stored yet.")
+            resp = "I do not have any personal memories stored yet."
         else:
-            summary = "Here is what I remember: " + "; ".join([m["fact"] for m in memories[:3]])
-            speak(summary)
+            resp = "Here is what I remember: " + "; ".join([m["fact"] for m in memories[:3]])
+        speak(resp)
+        _add_to_history(command, resp)
         return "continue"
 
     if "forget everything" in cmd_lower or "clear my memory" in cmd_lower:
         memory_engine.clear_all()
-        speak("I have cleared all stored personal memories.")
+        resp = "I have cleared all stored personal memories."
+        speak(resp)
+        _add_to_history(command, resp)
         return "continue"
 
-    # Fast background fact extraction
+    # 5. Fast background fact extraction
     try:
         learned = au_memory.extract_and_store_facts(command, memory_engine)
         if learned:
@@ -216,29 +423,59 @@ def process_command(command: str):
     except Exception:
         pass
 
-    # Determine target domain layer
+    # 6. Smart intent classification & routing
+    intent_data = classify_voice_intent(command)
+    intent = intent_data["intent"]
+    layer = intent_data["layer"]
+    urgency_val = intent_data["urgency"]
+    entities = intent_data["entities"]
+
     active_model, persona_name, persona_desc = get_active_model_and_persona()
-    if persona_name == "coder" or any(k in cmd_lower for k in ["code", "syntax", "git commit", "diff", "edit file", "repo"]):
+    if persona_name == "coder":
         layer = "coding"
         cost = au_orchestrator.MemoryCost.MEDIUM
-    elif persona_name == "researcher" or any(k in cmd_lower for k in ["document", "pdf", "summarize notes", "research paper"]):
+    elif persona_name == "researcher":
         layer = "document_search"
         cost = au_orchestrator.MemoryCost.MEDIUM
-    elif any(k in cmd_lower for k in ["volume", "battery", "open app", "close app", "screenshot", "disk", "time"]):
-        layer = "chat"
-        cost = au_orchestrator.MemoryCost.LOW
+    elif layer in ["coding", "document_search"]:
+        cost = au_orchestrator.MemoryCost.MEDIUM
     else:
-        layer = "chat"
         cost = au_orchestrator.MemoryCost.LOW
 
+    # 7. Emotion analysis and adaptation
+    detected_emotion = "calm"
+    if _emotion_engine:
+        try:
+            emo_analysis = _emotion_engine.analyze_user_emotion(command)
+            detected_emotion = emo_analysis.get("emotion", "calm")
+            _emotion_engine.update_mood(emo_analysis, context="voice")
+        except Exception:
+            pass
+
+    # 8. Build multi-turn conversational message history
+    formatted_messages = []
+    for u, a in session_history:
+        formatted_messages.append({"role": "user", "content": u})
+        formatted_messages.append({"role": "assistant", "content": a})
+    formatted_messages.append({"role": "user", "content": command})
+
+    priority = au_orchestrator.TaskPriority.URGENT if urgency_val >= 0.7 else au_orchestrator.TaskPriority.HIGH
+
     emit_state("THINKING")
-    print(f"🧠 [AU ORCHESTRATOR ({layer.upper()})]: Dispatching \"{command}\"", flush=True)
+    print(f"🧠 [AU ORCHESTRATOR ({layer.upper()})]: Intent={intent} | Dispatching \"{command}\"", flush=True)
 
     task = au_orchestrator.AUTask(
         layer=layer,
         prompt=command,
-        payload={"is_voice": True},
-        priority=au_orchestrator.TaskPriority.URGENT,
+        payload={
+            "is_voice": True,
+            "messages": formatted_messages,
+            "history": session_history,
+            "session_history": session_history,
+            "intent": intent,
+            "entities": entities,
+        },
+        priority=priority,
         memory_cost=cost
     )
     orchestrator.queue.submit(task)
@@ -262,16 +499,25 @@ def process_command(command: str):
             print(f"[AU_ACTION:{act}]", flush=True)
             print(f"⚡ [ACTION EXECUTED]: {act}", flush=True)
 
+    # 9. Apply emotional voice prefix
+    prefix = get_emotional_voice_prefix(detected_emotion)
+    if prefix and final_speech and not final_speech.startswith(prefix):
+        final_speech = f"{prefix} {final_speech}"
+
     speak(final_speech)
-    return "continue"
+    _add_to_history(command, final_speech)
     return "continue"
 
 def main():
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
     emit_state("READY")
-    speak("Hello Aditya! AU is online. Speak your command anytime.")
 
+    # Startup greeting with time, mood, and inspiring opening
+    greeting = generate_startup_greeting()
+    speak(greeting)
+
+    global silence_count
     is_sleeping = False
 
     while True:
@@ -279,8 +525,9 @@ def main():
             if is_sleeping:
                 emit_state("STANDBY")
                 heard = listen_and_transcribe()
-                if heard and ("wake up" in heard.lower() or "hey au" in heard.lower() or "au" in heard.lower()):
+                if heard and is_addressed(heard):
                     is_sleeping = False
+                    silence_count = 0
                     speak("I am back awake and ready.")
                 time.sleep(0.2)
                 continue
@@ -288,8 +535,14 @@ def main():
             user_speech = listen_and_transcribe()
 
             if not user_speech or len(user_speech) < 2:
+                silence_count += 1
+                if silence_count == 3:
+                    speak("I'm here — just speak when you're ready.")
                 time.sleep(0.1)
                 continue
+
+            # Reset silence counter upon receiving valid speech
+            silence_count = 0
 
             print(f"[AU_USER_TEXT:{user_speech}]", flush=True)
             print(f"👤 [YOU SAID]: \"{user_speech}\"", flush=True)

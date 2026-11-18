@@ -486,6 +486,340 @@ def run_get_repo_map(args: GetRepoMapArgs) -> ToolResult:
         return ToolResult(success=False, message=f"Repo map error: {e}")
 
 # ==============================================================================
+# NEW TOOL SCHEMAS & RUNNERS (v5.0 Expansion)
+# ==============================================================================
+
+# --- Schemas ---
+
+class SetClipboardArgs(BaseModel):
+    text: str = Field(..., description="Text to write to the macOS clipboard")
+
+class GetWeatherArgs(BaseModel):
+    city: str = Field("auto", description="City name or 'auto' to detect location")
+
+class ReminderCreateArgs(BaseModel):
+    title: str = Field(..., min_length=1, description="Reminder title")
+    time_str: str = Field(..., description="When to trigger the reminder, e.g. '5pm' or '2024-12-31 09:00'")
+
+class SetWallpaperArgs(BaseModel):
+    image_path: str = Field(..., description="Absolute path to the image file to use as wallpaper")
+
+class TypeTextArgs(BaseModel):
+    text: str = Field(..., description="Text to type into the frontmost macOS application via osascript")
+
+class TranslateTextArgs(BaseModel):
+    text: str = Field(..., min_length=1, description="Text to translate")
+    target_lang: str = Field("es", description="Target language code, e.g. 'es', 'fr', 'de', 'ja'")
+
+class SummarizeFileArgs(BaseModel):
+    path: str = Field(..., description="Path of the file to summarise")
+    max_chars: int = Field(2000, ge=100, le=10000, description="Maximum characters to return")
+
+class ListDirectoryArgs(BaseModel):
+    path: str = Field(".", description="Directory path to list")
+
+class CompressFolderArgs(BaseModel):
+    folder_path: str = Field(..., description="Path of the folder to compress")
+    output_path: str = Field(..., description="Destination zip file path")
+
+class SpeakTextArgs(BaseModel):
+    text: str = Field(..., min_length=1, description="Text for macOS to speak aloud")
+    voice: str = Field("Samantha", description="macOS voice name, e.g. 'Samantha', 'Alex', 'Daniel'")
+
+class WordCountFileArgs(BaseModel):
+    path: str = Field(..., description="Path of the file to word-count")
+
+class DiffFilesArgs(BaseModel):
+    path1: str = Field(..., description="First file path")
+    path2: str = Field(..., description="Second file path")
+
+# --- Runners ---
+
+def run_get_clipboard() -> ToolResult:
+    """Reads the current macOS clipboard content via pbpaste."""
+    try:
+        proc = subprocess.run(["pbpaste"], capture_output=True, text=True)
+        content = proc.stdout
+        if not content:
+            return ToolResult(success=True, message="Clipboard is empty", data={"content": ""})
+        preview = content[:300] + ("..." if len(content) > 300 else "")
+        return ToolResult(success=True, message=f"Clipboard content: {preview}", data={"content": content})
+    except Exception as e:
+        return ToolResult(success=False, message=f"Failed to read clipboard: {e}")
+
+def run_set_clipboard(args: SetClipboardArgs) -> ToolResult:
+    """Writes text to the macOS clipboard via pbcopy."""
+    try:
+        proc = subprocess.run(["pbcopy"], input=args.text, text=True, capture_output=True)
+        if proc.returncode == 0:
+            preview = args.text[:80] + ("..." if len(args.text) > 80 else "")
+            return ToolResult(success=True, message=f"Clipboard set to: {preview}", data={"length": len(args.text)})
+        return ToolResult(success=False, message=f"pbcopy failed: {proc.stderr}")
+    except Exception as e:
+        return ToolResult(success=False, message=f"Failed to set clipboard: {e}")
+
+def run_get_wifi_status() -> ToolResult:
+    """Returns the current Wi-Fi network name via networksetup."""
+    try:
+        proc = subprocess.run(
+            ["networksetup", "-getairportnetwork", "en0"],
+            capture_output=True, text=True
+        )
+        output = proc.stdout.strip()
+        if not output:
+            # Try en1 if en0 gave nothing
+            proc = subprocess.run(["networksetup", "-getairportnetwork", "en1"], capture_output=True, text=True)
+            output = proc.stdout.strip()
+        if "You are not associated" in output:
+            return ToolResult(success=True, message="Wi-Fi: Not connected to any network", data={"connected": False})
+        return ToolResult(success=True, message=f"Wi-Fi status: {output}", data={"connected": True, "info": output})
+    except Exception as e:
+        return ToolResult(success=False, message=f"Failed to get Wi-Fi status: {e}")
+
+def run_list_running_apps() -> ToolResult:
+    """Lists currently running user-visible applications via ps."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-axco", "pid,comm"],
+            capture_output=True, text=True
+        )
+        lines = proc.stdout.strip().split("\n")[1:]  # skip header
+        # Filter to interesting app names (capitalized or containing .app patterns)
+        apps = []
+        seen = set()
+        for line in lines:
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                pid, name = parts
+                if name not in seen and not name.startswith("("):
+                    seen.add(name)
+                    apps.append(name)
+        # Keep first 40 unique names
+        apps = apps[:40]
+        summary = ", ".join(apps)
+        return ToolResult(success=True, message=f"Running processes ({len(apps)}): {summary}", data={"apps": apps})
+    except Exception as e:
+        return ToolResult(success=False, message=f"Failed to list running apps: {e}")
+
+def run_get_weather(args: GetWeatherArgs) -> ToolResult:
+    """Gets a one-line weather summary from wttr.in."""
+    try:
+        city = args.city.strip()
+        if city.lower() == "auto" or not city:
+            city = ""
+        encoded_city = urllib.parse.quote(city)
+        url = f"https://wttr.in/{encoded_city}?format=3"
+        req = urllib.request.Request(url, headers={"User-Agent": "curl/7.88"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            weather = resp.read().decode("utf-8", errors="replace").strip()
+        return ToolResult(success=True, message=f"Weather: {weather}", data={"raw": weather, "city": city or "auto"})
+    except Exception as e:
+        return ToolResult(success=False, message=f"Failed to get weather: {e}")
+
+def run_reminder_create(args: ReminderCreateArgs) -> ToolResult:
+    """Creates a macOS Reminder via AppleScript."""
+    try:
+        script = f'''
+tell application "Reminders"
+    set newReminder to make new reminder with properties {{name:"{args.title}"}}
+end tell
+'''
+        proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if proc.returncode == 0:
+            return ToolResult(success=True, message=f"Reminder created: '{args.title}' (at {args.time_str})", data={"title": args.title, "time": args.time_str})
+        return ToolResult(success=False, message=f"Failed to create reminder: {proc.stderr.strip()}")
+    except Exception as e:
+        return ToolResult(success=False, message=f"Reminder creation error: {e}")
+
+def run_set_wallpaper(args: SetWallpaperArgs) -> ToolResult:
+    """Sets the macOS desktop wallpaper via AppleScript."""
+    path = os.path.expanduser(args.image_path.strip())
+    if not os.path.exists(path):
+        return ToolResult(success=False, message=f"Image not found: {path}")
+    try:
+        script = f'tell application "Finder" to set desktop picture to POSIX file "{path}"'
+        proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if proc.returncode == 0:
+            return ToolResult(success=True, message=f"Wallpaper set to: {os.path.basename(path)}", data={"path": path})
+        return ToolResult(success=False, message=f"Failed to set wallpaper: {proc.stderr.strip()}")
+    except Exception as e:
+        return ToolResult(success=False, message=f"Wallpaper error: {e}")
+
+def run_get_frontmost_app() -> ToolResult:
+    """Returns the name of the currently active/frontmost macOS application."""
+    try:
+        script = 'tell application "System Events" to get name of first application process whose frontmost is true'
+        proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        name = proc.stdout.strip()
+        if name:
+            return ToolResult(success=True, message=f"Frontmost app: {name}", data={"app": name})
+        return ToolResult(success=False, message=f"Could not determine frontmost app: {proc.stderr.strip()}")
+    except Exception as e:
+        return ToolResult(success=False, message=f"get_frontmost_app error: {e}")
+
+def run_type_text(args: TypeTextArgs) -> ToolResult:
+    """Types text into the frontmost macOS application via osascript keystroke."""
+    try:
+        # Escape double quotes and backslashes for AppleScript safety
+        safe_text = args.text.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'tell application "System Events" to keystroke "{safe_text}"'
+        proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if proc.returncode == 0:
+            preview = args.text[:60] + ("..." if len(args.text) > 60 else "")
+            return ToolResult(success=True, message=f"Typed: {preview}", data={"text": args.text})
+        return ToolResult(success=False, message=f"type_text failed: {proc.stderr.strip()}")
+    except Exception as e:
+        return ToolResult(success=False, message=f"type_text error: {e}")
+
+def run_translate_text(args: TranslateTextArgs) -> ToolResult:
+    """Translates text using the MyMemory free API (no key required)."""
+    try:
+        encoded_text = urllib.parse.quote(args.text[:500])  # API limit
+        lang_pair = f"en|{args.target_lang.strip().lower()}"
+        url = f"https://api.mymemory.translated.net/get?q={encoded_text}&langpair={lang_pair}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        translated = data.get("responseData", {}).get("translatedText", "")
+        if translated:
+            return ToolResult(success=True, message=f"Translation ({args.target_lang}): {translated}", data={"original": args.text, "translated": translated, "lang": args.target_lang})
+        return ToolResult(success=False, message=f"Translation returned no result: {data}")
+    except Exception as e:
+        return ToolResult(success=False, message=f"Translation error: {e}")
+
+def run_summarize_file(args: SummarizeFileArgs) -> ToolResult:
+    """Reads a file and returns a smart truncated summary."""
+    path = os.path.expanduser(args.path)
+    if not os.path.exists(path):
+        return ToolResult(success=False, message=f"File not found: {path}")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        total_chars = len(content)
+        total_lines = content.count("\n") + 1
+        # Smart summary: take beginning + middle + end if large
+        max_c = args.max_chars
+        if total_chars <= max_c:
+            summary = content
+        else:
+            chunk = max_c // 3
+            summary = content[:chunk] + f"\n\n... [{total_chars - chunk*2} chars omitted] ...\n\n" + content[-chunk:]
+        msg = f"Summary of {os.path.basename(path)} ({total_lines} lines, {total_chars} chars):\n{summary}"
+        return ToolResult(success=True, message=msg, data={"path": path, "total_chars": total_chars, "total_lines": total_lines})
+    except Exception as e:
+        return ToolResult(success=False, message=f"summarize_file error: {e}")
+
+def run_list_directory(args: ListDirectoryArgs) -> ToolResult:
+    """Lists a directory with file sizes and modification dates."""
+    path = os.path.expanduser(args.path)
+    if not os.path.isdir(path):
+        return ToolResult(success=False, message=f"Directory not found: {path}")
+    try:
+        entries = []
+        for name in sorted(os.listdir(path)):
+            full = os.path.join(path, name)
+            stat = os.stat(full)
+            size = stat.st_size
+            mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+            kind = "DIR" if os.path.isdir(full) else "FILE"
+            if size < 1024:
+                size_str = f"{size}B"
+            elif size < 1024 * 1024:
+                size_str = f"{size/1024:.1f}KB"
+            else:
+                size_str = f"{size/1024/1024:.1f}MB"
+            entries.append(f"{'📁' if kind=='DIR' else '📄'} {name:40s} {size_str:10s} {mtime}")
+        listing = "\n".join(entries) if entries else "(empty directory)"
+        msg = f"Directory: {path} ({len(entries)} items)\n{listing}"
+        return ToolResult(success=True, message=msg, data={"path": path, "count": len(entries)})
+    except Exception as e:
+        return ToolResult(success=False, message=f"list_directory error: {e}")
+
+def run_compress_folder(args: CompressFolderArgs) -> ToolResult:
+    """Compresses a folder into a zip archive."""
+    folder = os.path.expanduser(args.folder_path)
+    output = os.path.expanduser(args.output_path)
+    if not os.path.isdir(folder):
+        return ToolResult(success=False, message=f"Folder not found: {folder}")
+    try:
+        proc = subprocess.run(
+            ["zip", "-r", output, "."],
+            cwd=folder,
+            capture_output=True, text=True, timeout=60
+        )
+        if proc.returncode == 0:
+            size = os.path.getsize(output) if os.path.exists(output) else 0
+            size_str = f"{size/1024/1024:.1f}MB" if size > 1024*1024 else f"{size/1024:.1f}KB"
+            return ToolResult(success=True, message=f"Compressed '{os.path.basename(folder)}' → {output} ({size_str})", data={"output": output, "size_bytes": size})
+        return ToolResult(success=False, message=f"Compression failed: {proc.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        return ToolResult(success=False, message="Compression timed out after 60s")
+    except Exception as e:
+        return ToolResult(success=False, message=f"compress_folder error: {e}")
+
+def run_get_public_ip() -> ToolResult:
+    """Returns the machine's current public IP address."""
+    try:
+        req = urllib.request.Request("https://ifconfig.me", headers={"User-Agent": "curl/7.88"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            ip = resp.read().decode("utf-8").strip()
+        return ToolResult(success=True, message=f"Public IP: {ip}", data={"ip": ip})
+    except Exception as e:
+        return ToolResult(success=False, message=f"Failed to get public IP: {e}")
+
+def run_speak_text(args: SpeakTextArgs) -> ToolResult:
+    """Speaks text aloud using the macOS 'say' command (non-blocking)."""
+    try:
+        # Non-blocking: use Popen
+        subprocess.Popen(["say", "-v", args.voice, args.text])
+        preview = args.text[:80] + ("..." if len(args.text) > 80 else "")
+        return ToolResult(success=True, message=f"Speaking: '{preview}' (voice: {args.voice})", data={"text": args.text, "voice": args.voice})
+    except Exception as e:
+        return ToolResult(success=False, message=f"speak_text error: {e}")
+
+def run_word_count_file(args: WordCountFileArgs) -> ToolResult:
+    """Returns line, word, and character counts for a file."""
+    path = os.path.expanduser(args.path)
+    if not os.path.exists(path):
+        return ToolResult(success=False, message=f"File not found: {path}")
+    try:
+        proc = subprocess.run(["wc", "-l", "-w", "-c", path], capture_output=True, text=True)
+        output = proc.stdout.strip()
+        # Parse: "   lines   words   chars   path"
+        parts = output.split()
+        if len(parts) >= 3:
+            lines, words, chars = parts[0], parts[1], parts[2]
+            msg = f"{os.path.basename(path)}: {lines} lines, {words} words, {chars} characters"
+            return ToolResult(success=True, message=msg, data={"lines": lines, "words": words, "chars": chars, "path": path})
+        return ToolResult(success=False, message=f"Could not parse wc output: {output}")
+    except Exception as e:
+        return ToolResult(success=False, message=f"word_count_file error: {e}")
+
+def run_diff_files(args: DiffFilesArgs) -> ToolResult:
+    """Diffs two files and returns a readable unified diff."""
+    p1 = os.path.expanduser(args.path1)
+    p2 = os.path.expanduser(args.path2)
+    if not os.path.exists(p1):
+        return ToolResult(success=False, message=f"File not found: {p1}")
+    if not os.path.exists(p2):
+        return ToolResult(success=False, message=f"File not found: {p2}")
+    try:
+        proc = subprocess.run(
+            ["diff", "-u", "--label", os.path.basename(p1), "--label", os.path.basename(p2), p1, p2],
+            capture_output=True, text=True
+        )
+        output = proc.stdout.strip()
+        if not output:
+            return ToolResult(success=True, message=f"Files are identical: {os.path.basename(p1)} and {os.path.basename(p2)}", data={"identical": True})
+        # Truncate if huge
+        if len(output) > 2000:
+            output = output[:2000] + "\n... [diff truncated]"
+        msg = f"Diff ({os.path.basename(p1)} vs {os.path.basename(p2)}):\n{output}"
+        return ToolResult(success=True, message=msg, data={"diff": output, "identical": False})
+    except Exception as e:
+        return ToolResult(success=False, message=f"diff_files error: {e}")
+
+# ==============================================================================
 # Model Context Protocol (MCP) Registry
 # ==============================================================================
 
@@ -512,6 +846,24 @@ TOOL_REGISTRY = {
     "execute_bash": (ExecuteBashArgs, run_execute_bash, "Safely execute a shell command on macOS and inspect output"),
     "read_file": (ReadFileArgs, run_read_file, "Read text from a local file"),
     "write_file": (WriteFileArgs, run_write_file, "Write text to a local file"),
+    # v5.0 New Tools
+    "get_clipboard": (None, run_get_clipboard, "Read the current macOS clipboard content"),
+    "set_clipboard": (SetClipboardArgs, run_set_clipboard, "Write text to the macOS clipboard"),
+    "get_wifi_status": (None, run_get_wifi_status, "Get the current Wi-Fi network name and connection status"),
+    "list_running_apps": (None, run_list_running_apps, "List currently running applications and processes"),
+    "get_weather": (GetWeatherArgs, run_get_weather, "Get a one-line weather summary for a city via wttr.in"),
+    "reminder_create": (ReminderCreateArgs, run_reminder_create, "Create a macOS Reminder via AppleScript"),
+    "set_wallpaper": (SetWallpaperArgs, run_set_wallpaper, "Set the macOS desktop wallpaper to an image file"),
+    "get_frontmost_app": (None, run_get_frontmost_app, "Get the name of the currently active/frontmost macOS application"),
+    "type_text": (TypeTextArgs, run_type_text, "Type text into the frontmost macOS application via osascript"),
+    "translate_text": (TranslateTextArgs, run_translate_text, "Translate text to another language using the MyMemory free API"),
+    "summarize_file": (SummarizeFileArgs, run_summarize_file, "Read a file and return a smart truncated summary"),
+    "list_directory": (ListDirectoryArgs, run_list_directory, "List a directory with file sizes and modification dates"),
+    "compress_folder": (CompressFolderArgs, run_compress_folder, "Compress a folder into a zip archive"),
+    "get_public_ip": (None, run_get_public_ip, "Get the machine's current public IP address"),
+    "speak_text": (SpeakTextArgs, run_speak_text, "Speak text aloud using the macOS 'say' command"),
+    "word_count_file": (WordCountFileArgs, run_word_count_file, "Get line, word, and character counts for a file"),
+    "diff_files": (DiffFilesArgs, run_diff_files, "Diff two files and return a readable unified diff"),
 }
 
 def get_mcp_tools() -> List[Dict[str, Any]]:
@@ -701,6 +1053,101 @@ def _execute_legacy_action(action_str: str) -> ToolResult:
     m = re.match(r'edit_file_patch\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
     if m:
         return run_edit_file_patch(EditFilePatchArgs(path=m.group(1).strip("'\""), search_block=m.group(2).strip("'\""), replace_block=m.group(3).strip("'\"")))
+
+    # get_clipboard()
+    if re.search(r'get_clipboard', action_str, re.IGNORECASE):
+        return run_get_clipboard()
+
+    # set_clipboard("text")
+    m = re.match(r'set_clipboard\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_set_clipboard(SetClipboardArgs(text=m.group(1).strip("'\"")))
+
+    # get_wifi_status()
+    if re.search(r'get_wifi_status|wifi_status', action_str, re.IGNORECASE):
+        return run_get_wifi_status()
+
+    # list_running_apps()
+    if re.search(r'list_running_apps|running_apps', action_str, re.IGNORECASE):
+        return run_list_running_apps()
+
+    # get_weather("city") or get_weather()
+    m = re.match(r'get_weather\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        c = m.group(1).strip("'\"") or "auto"
+        return run_get_weather(GetWeatherArgs(city=c))
+    elif "get_weather" in action_str.lower():
+        return run_get_weather(GetWeatherArgs(city="auto"))
+
+    # reminder_create("title", "time_str")
+    m = re.match(r'reminder_create\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_reminder_create(ReminderCreateArgs(title=m.group(1).strip("'\""), time_str=m.group(2).strip("'\"")))
+
+    # set_wallpaper("image_path")
+    m = re.match(r'set_wallpaper\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_set_wallpaper(SetWallpaperArgs(image_path=m.group(1).strip("'\"")))
+
+    # get_frontmost_app()
+    if re.search(r'get_frontmost_app|frontmost_app', action_str, re.IGNORECASE):
+        return run_get_frontmost_app()
+
+    # type_text("text")
+    m = re.match(r'type_text\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_type_text(TypeTextArgs(text=m.group(1).strip("'\"")))
+
+    # translate_text("text", "target_lang")
+    m = re.match(r'translate_text\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_translate_text(TranslateTextArgs(text=m.group(1).strip("'\""), target_lang=m.group(2).strip("'\"")))
+    m = re.match(r'translate_text\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_translate_text(TranslateTextArgs(text=m.group(1).strip("'\"")))
+
+    # summarize_file("path", max_chars)
+    m = re.match(r'summarize_file\([\'"]?(.*?)[\'"]?,\s*(\d+)\)', action_str, re.IGNORECASE)
+    if m:
+        return run_summarize_file(SummarizeFileArgs(path=m.group(1).strip("'\""), max_chars=int(m.group(2))))
+    m = re.match(r'summarize_file\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_summarize_file(SummarizeFileArgs(path=m.group(1).strip("'\"")))
+
+    # list_directory("path")
+    m = re.match(r'list_directory\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        p = m.group(1).strip("'\"") or "."
+        return run_list_directory(ListDirectoryArgs(path=p))
+    elif "list_directory" in action_str.lower():
+        return run_list_directory(ListDirectoryArgs(path="."))
+
+    # compress_folder("folder_path", "output_path")
+    m = re.match(r'compress_folder\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_compress_folder(CompressFolderArgs(folder_path=m.group(1).strip("'\""), output_path=m.group(2).strip("'\"")))
+
+    # get_public_ip()
+    if re.search(r'get_public_ip|public_ip', action_str, re.IGNORECASE):
+        return run_get_public_ip()
+
+    # speak_text("text", "voice")
+    m = re.match(r'speak_text\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_speak_text(SpeakTextArgs(text=m.group(1).strip("'\""), voice=m.group(2).strip("'\"")))
+    m = re.match(r'speak_text\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
+    if m:
+        return run_speak_text(SpeakTextArgs(text=m.group(1).strip("'\"")))
+
+    # word_count_file("path")
+    m = re.match(r'word_count_file\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_word_count_file(WordCountFileArgs(path=m.group(1).strip("'\"")))
+
+    # diff_files("path1", "path2")
+    m = re.match(r'diff_files\([\'"]?(.*?)[\'"]?,\s*[\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE)
+    if m:
+        return run_diff_files(DiffFilesArgs(path1=m.group(1).strip("'\""), path2=m.group(2).strip("'\"")))
 
     # execute_bash("command")
     m = re.match(r'execute_bash\([\'"]?(.*?)[\'"]?\)', action_str, re.IGNORECASE | re.DOTALL)
